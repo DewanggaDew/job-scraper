@@ -1,0 +1,196 @@
+# ============================================================
+#  Job Scraper — Configuration
+#  Dewangga Dewata Indera
+# ============================================================
+
+job_preferences:
+  titles:
+    - "Web Developer"
+    - "Software Engineer"
+    - "Software Developer"
+    - "Full Stack Developer"
+    - "Frontend Developer"
+    - "Backend Developer"
+    - "Product Manager"
+    - "IT Consultant"
+    - "Product Owner"
+
+  location_types:
+    - "remote"
+    - "hybrid"
+    - "on-site"
+
+  locations:
+    on_site:
+      - "Selangor, Malaysia"
+      - "Kuala Lumpur, Malaysia"
+      - "Petaling Jaya, Malaysia"
+      - "Jakarta, Indonesia"
+    remote:
+      - "Malaysia"
+      - "Indonesia"
+      - "Selangor, Malaysia"
+      - "Jakarta, Indonesia"
+
+# ============================================================
+#  Scoring Weights & Thresholds
+# ============================================================
+scoring:
+  weights:
+    skills: 0.40
+    seniority: 0.25
+    recency: 0.20
+    title: 0.15
+
+  thresholds:
+    strong: 75
+    decent: 50
+
+  notify_threshold: 75     # Only email jobs at or above this score
+  max_job_age_days: 30     # Jobs older than this get recency_score = 0
+
+# ============================================================
+#  Scraping Behaviour
+# ============================================================
+scraping:
+  max_jobs_per_source: 50
+  delay_between_requests:
+    min_seconds: 3
+    max_seconds: 8
+  headless: true           # Set false to debug scrapers visually
+
+# ============================================================
+#  Notification
+# ============================================================
+notification:
+  # Actual email is set via NOTIFY_EMAIL environment variable / GitHub Secret
+  send_decent_matches: true   # Include decent matches in email (not just strong)
+  max_jobs_in_email: 15
+
+# ============================================================
+#  CV Profiles
+#  Skills/titles here are used for scoring when PDFs are not
+#  available (e.g. first GitHub Actions run before PDFs uploaded).
+# ============================================================
+cv_profiles:
+  swe:
+    path: "cv/swe_cv.pdf"
+    years_experience: 1.5
+    seniority: "entry"
+    titles:
+      - "Software Engineer"
+      - "Software Developer"
+      - "Web Developer"
+      - "Full Stack Developer"
+      - "Frontend Developer"
+      - "Backend Developer"
+      - "IT Consultant"
+    skills:
+      # Languages
+      - "JavaScript"
+      - "TypeScript"
+      - "Java"
+      - "C"
+      - "C++"
+      # Frontend
+      - "React"
+      - "React.js"
+      - "Next.js"
+      - "Tailwind CSS"
+      - "HTML"
+      - "CSS"
+      # Backend
+      - "Node.js"
+      - "Express"
+      - "Express.js"
+      - ".NET"
+      - ".NET Core"
+      - "REST API"
+      - "REST APIs"
+      # Databases
+      - "PostgreSQL"
+      - "SQL Server"
+      - "SQL"
+      - "Firebase"
+      - "Firestore"
+      # Tools & DevOps
+      - "Git"
+      - "GitHub"
+      - "Postman"
+      - "CI/CD"
+      - "Jest"
+      # Auth & Concepts
+      - "OAuth 2.0"
+      - "Firebase Auth"
+      - "RESTful API design"
+      - "Relational data modeling"
+      - "Unit testing"
+      - "Agile"
+    keywords:
+      - "full stack"
+      - "frontend"
+      - "backend"
+      - "web development"
+      - "software development"
+      - "API development"
+      - "authentication"
+      - "compliance system"
+      - "CMS"
+      - "hackathon"
+
+  pm:
+    path: "cv/pm_cv.pdf"
+    years_experience: 1.5
+    seniority: "entry"
+    titles:
+      - "Product Manager"
+      - "Product Owner"
+      - "IT Consultant"
+      - "Business Analyst"
+      - "Associate Product Manager"
+      - "Junior Product Manager"
+    skills:
+      # PM Core
+      - "Product Management"
+      - "Requirements Gathering"
+      - "Stakeholder Management"
+      - "User Stories"
+      - "Acceptance Criteria"
+      - "Product Documentation"
+      - "Roadmap"
+      - "Agile"
+      - "Scrum"
+      - "JIRA"
+      # Analytics
+      - "Google Analytics"
+      - "Data Analysis"
+      - "KPIs"
+      - "Metrics"
+      # Technical (PM needs tech context)
+      - "REST API"
+      - "SQL"
+      - "Firebase"
+      - "React.js"
+      - "Node.js"
+      - ".NET Core"
+      - "Git"
+      - "CI/CD"
+      - "Postman"
+      # Soft skills keywords
+      - "Cross-functional"
+      - "Go-to-market"
+      - "User research"
+      - "UX"
+      - "Wireframing"
+    keywords:
+      - "product lifecycle"
+      - "end-to-end delivery"
+      - "stakeholder"
+      - "business requirements"
+      - "compliance"
+      - "user feedback"
+      - "sprint"
+      - "backlog"
+      - "release"
+      - "go-to-market"
+      - "product strategy"

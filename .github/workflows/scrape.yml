@@ -1,0 +1,141 @@
+name: Job Scraper
+
+on:
+  schedule:
+    # Every 4 hours at minute 0  (UTC)
+    # 00:00 · 04:00 · 08:00 · 12:00 · 16:00 · 20:00
+    - cron: "0 */4 * * *"
+
+  # Allow triggering a manual run from the GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: "Set to 'true' to run Playwright in headed mode (screenshots saved)"
+        required: false
+        default: "false"
+
+jobs:
+  scrape:
+    name: Scrape & Score Jobs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45        # hard cap — prevents runaway browser sessions
+
+    defaults:
+      run:
+        working-directory: scraper   # all commands run from the scraper/ package dir
+
+    env:
+      # ── Supabase ────────────────────────────────────────────────────────────
+      SUPABASE_URL:          ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY:          ${{ secrets.SUPABASE_KEY }}
+
+      # ── LinkedIn ─────────────────────────────────────────────────────────────
+      LINKEDIN_EMAIL:        ${{ secrets.LINKEDIN_EMAIL }}
+      LINKEDIN_PASSWORD:     ${{ secrets.LINKEDIN_PASSWORD }}
+      LINKEDIN_COOKIES:      ${{ secrets.LINKEDIN_COOKIES }}
+
+      # ── Notifications ────────────────────────────────────────────────────────
+      RESEND_API_KEY:        ${{ secrets.RESEND_API_KEY }}
+      NOTIFY_EMAIL:          ${{ secrets.NOTIFY_EMAIL }}
+      DASHBOARD_URL:         ${{ secrets.DASHBOARD_URL }}
+
+      # ── sentence-transformers model cache ────────────────────────────────────
+      SENTENCE_TRANSFORMERS_HOME: /tmp/st_cache
+      HF_HOME:               /tmp/hf_cache
+
+      # ── Playwright ───────────────────────────────────────────────────────────
+      PLAYWRIGHT_BROWSERS_PATH: /tmp/pw_browsers
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ─────────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 3. Cache pip packages ────────────────────────────────────────────────
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('scraper/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # ── 4. Install Python dependencies ───────────────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Install CPU-only PyTorch first (avoids pulling the large GPU wheel)
+          pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      # ── 5. Cache Playwright browsers ─────────────────────────────────────────
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: pw-cache
+        with:
+          path: /tmp/pw_browsers
+          key: ${{ runner.os }}-playwright-chromium-1.44.0
+          restore-keys: |
+            ${{ runner.os }}-playwright-chromium-
+
+      - name: Install Playwright Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: playwright install chromium --with-deps
+
+      - name: Install Playwright system dependencies
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: playwright install-deps chromium
+
+      # ── 6. Cache sentence-transformers model ─────────────────────────────────
+      - name: Cache embedding model (all-MiniLM-L6-v2)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/st_cache
+          # Cache key tied to model name — update the key if you change the model
+          key: ${{ runner.os }}-st-model-all-MiniLM-L6-v2-v1
+          restore-keys: |
+            ${{ runner.os }}-st-model-all-MiniLM-L6-v2-
+
+      # ── 7. Pre-warm the embedding model (downloads if not cached) ────────────
+      - name: Pre-warm embedding model
+        run: |
+          python - <<'EOF'
+          from sentence_transformers import SentenceTransformer
+          import os
+          cache = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+          print(f"Loading model into cache: {cache}")
+          m = SentenceTransformer("all-MiniLM-L6-v2", cache_folder=cache)
+          scores = m.encode(["warm-up sentence"], convert_to_numpy=True)
+          print(f"Model ready — embedding dim: {scores.shape[1]}")
+          EOF
+
+      # ── 8. Run the scraper ───────────────────────────────────────────────────
+      - name: Run job scraper
+        run: python main.py
+
+      # ── 9. Upload Playwright trace on failure (debug) ─────────────────────────
+      - name: Upload Playwright trace on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-trace-${{ github.run_id }}
+          path: scraper/traces/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      # ── 10. Print run summary ────────────────────────────────────────────────
+      - name: Run complete
+        if: always()
+        run: |
+          echo "──────────────────────────────────────────"
+          echo "  Scrape run finished"
+          echo "  Triggered by : ${{ github.event_name }}"
+          echo "  Ref          : ${{ github.ref }}"
+          echo "  Run ID       : ${{ github.run_id }}"
+          echo "──────────────────────────────────────────"
