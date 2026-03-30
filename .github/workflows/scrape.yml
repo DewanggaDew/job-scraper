@@ -17,7 +17,7 @@ on:
 jobs:
   scrape:
     name: Scrape & Score Jobs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 45        # hard cap — prevents runaway browser sessions
 
     defaults:
@@ -77,20 +77,14 @@ jobs:
       # ── 5. Cache Playwright browsers ─────────────────────────────────────────
       - name: Cache Playwright browsers
         uses: actions/cache@v4
-        id: pw-cache
         with:
           path: /tmp/pw_browsers
           key: ${{ runner.os }}-playwright-chromium-1.44.0
           restore-keys: |
             ${{ runner.os }}-playwright-chromium-
 
-      - name: Install Playwright Chromium
-        if: steps.pw-cache.outputs.cache-hit != 'true'
+      - name: Install Playwright Chromium + deps
         run: playwright install chromium --with-deps
-
-      - name: Install Playwright system dependencies
-        if: steps.pw-cache.outputs.cache-hit == 'true'
-        run: playwright install-deps chromium
 
       # ── 6. Cache sentence-transformers model ─────────────────────────────────
       - name: Cache embedding model (all-MiniLM-L6-v2)
