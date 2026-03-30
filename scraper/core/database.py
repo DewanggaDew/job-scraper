@@ -6,9 +6,24 @@ from typing import Any, Dict, List, Optional, Set
 
 from core.models import CVProfile, Job, JobScore, JobStatus, MatchLabel, ScrapeSummary
 
+from postgrest.exceptions import APIError
 from supabase import Client, create_client
 
 # ─── Client ──────────────────────────────────────────────────────────────────
+
+
+def _execute(request_builder: Any) -> Any:
+    """Run PostgREST execute(); map missing-table errors to a setup hint."""
+    try:
+        return request_builder.execute()
+    except APIError as e:
+        if e.code == "PGRST205":
+            raise RuntimeError(
+                "Supabase has no matching table (schema not applied). "
+                "Open supabase/schema.sql in this repo, paste it into "
+                "Supabase Dashboard → SQL Editor, and run it."
+            ) from e
+        raise
 
 
 def get_client() -> Client:
@@ -56,13 +71,13 @@ def upsert_job(job: Job) -> None:
 
     # upsert — on conflict keep user-controlled columns (status, notes, applied_at)
     # by only updating the columns we explicitly set above.
-    (client.table("jobs").upsert(data, on_conflict="id").execute())
+    _execute(client.table("jobs").upsert(data, on_conflict="id"))
 
 
 def get_existing_job_ids() -> Set[str]:
     """Return the set of all job IDs already in the database (for deduplication)."""
     client = get_client()
-    result = client.table("jobs").select("id").execute()
+    result = _execute(client.table("jobs").select("id"))
     return {row["id"] for row in (result.data or [])}
 
 
@@ -72,7 +87,7 @@ def get_new_strong_matches(since: datetime) -> List[Dict[str, Any]]:
     Used to decide what to include in the notification email.
     """
     client = get_client()
-    result = (
+    result = _execute(
         client.table("jobs")
         .select(
             "id, title, company, location, location_type, source, url, "
@@ -81,7 +96,6 @@ def get_new_strong_matches(since: datetime) -> List[Dict[str, Any]]:
         .in_("match_label", ["Strong", "Decent"])
         .gte("scraped_at", since.isoformat())
         .order("match_score", desc=True)
-        .execute()
     )
     return result.data or []
 
@@ -101,7 +115,7 @@ def update_job_status(
     if applied_at is not None:
         payload["applied_at"] = applied_at.isoformat()
 
-    client.table("jobs").update(payload).eq("id", job_id).execute()
+    _execute(client.table("jobs").update(payload).eq("id", job_id))
 
 
 def get_jobs(
@@ -135,13 +149,13 @@ def get_jobs(
     if min_score is not None:
         query = query.gte("match_score", min_score)
 
-    result = query.execute()
+    result = _execute(query)
     return result.data or []
 
 
 def get_job_by_id(job_id: str) -> Optional[Dict[str, Any]]:
     client = get_client()
-    result = client.table("jobs").select("*").eq("id", job_id).single().execute()
+    result = _execute(client.table("jobs").select("*").eq("id", job_id).single())
     return result.data
 
 
@@ -155,7 +169,9 @@ def get_dashboard_stats() -> Dict[str, int]:
         .isoformat()
     )
 
-    all_jobs = client.table("jobs").select("match_label, status, scraped_at").execute()
+    all_jobs = _execute(
+        client.table("jobs").select("match_label, status, scraped_at")
+    )
     rows = all_jobs.data or []
 
     stats: Dict[str, int] = {
@@ -194,22 +210,24 @@ def get_dashboard_stats() -> Dict[str, int]:
 
 def upsert_cv_profile(profile: CVProfile) -> None:
     client = get_client()
-    client.table("cv_profiles").upsert(
-        {
-            "id": profile.id,
-            "skills": profile.skills,
-            "titles": profile.titles,
-            "years_experience": profile.years_experience,
-            "seniority": profile.seniority,
-            "raw_text": profile.raw_text,
-        }
-    ).execute()
+    _execute(
+        client.table("cv_profiles").upsert(
+            {
+                "id": profile.id,
+                "skills": profile.skills,
+                "titles": profile.titles,
+                "years_experience": profile.years_experience,
+                "seniority": profile.seniority,
+                "raw_text": profile.raw_text,
+            }
+        )
+    )
 
 
 def get_cv_profiles() -> Dict[str, Dict[str, Any]]:
     """Return both CV profiles keyed by id ('swe', 'pm')."""
     client = get_client()
-    result = client.table("cv_profiles").select("*").execute()
+    result = _execute(client.table("cv_profiles").select("*"))
     return {row["id"]: row for row in (result.data or [])}
 
 
@@ -222,15 +240,17 @@ def log_scrape_run(
     error_message: Optional[str] = None,
 ) -> None:
     client = get_client()
-    client.table("scrape_runs").insert(
-        {
-            "started_at": summary.run_at.isoformat(),
-            "finished_at": datetime.utcnow().isoformat(),
-            "jobs_found": summary.total_scraped,
-            "jobs_new": summary.new_jobs,
-            "strong_matches": summary.strong_matches,
-            "email_sent": email_sent,
-            "error_message": error_message
-            or ("; ".join(summary.errors) if summary.errors else None),
-        }
-    ).execute()
+    _execute(
+        client.table("scrape_runs").insert(
+            {
+                "started_at": summary.run_at.isoformat(),
+                "finished_at": datetime.utcnow().isoformat(),
+                "jobs_found": summary.total_scraped,
+                "jobs_new": summary.new_jobs,
+                "strong_matches": summary.strong_matches,
+                "email_sent": email_sent,
+                "error_message": error_message
+                or ("; ".join(summary.errors) if summary.errors else None),
+            }
+        )
+    )

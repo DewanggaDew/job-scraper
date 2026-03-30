@@ -55,6 +55,22 @@ from scrapers.linkedin import LinkedInScraper
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 
+def _require_env(*names: str) -> None:
+    """Exit with a clear message if any required env var is missing or blank."""
+    missing = [n for n in names if not (os.environ.get(n) or "").strip()]
+    if not missing:
+        return
+    print("❌  Missing required environment variables:")
+    for n in missing:
+        print(f"     - {n}")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(
+            "\n   In GitHub Actions, add them as repository secrets:\n"
+            "   Repository → Settings → Secrets and variables → Actions."
+        )
+    sys.exit(1)
+
+
 def load_config() -> dict:
     """Load config.yaml from the scraper root directory."""
     config_path = os.path.join(
@@ -100,6 +116,8 @@ def run() -> None:
     print("=" * 65)
     print(f"  🚀  Job Scraper  —  {run_start.strftime('%Y-%m-%d %H:%M UTC')}")
     print("=" * 65)
+
+    _require_env("SUPABASE_URL", "SUPABASE_KEY")
 
     # ── Step 1: Load config ───────────────────────────────────────────────────
     print("\n📄  Loading config …")
