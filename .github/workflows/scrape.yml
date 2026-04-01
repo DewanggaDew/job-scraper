@@ -18,7 +18,9 @@ jobs:
   scrape:
     name: Scrape & Score Jobs
     runs-on: ubuntu-22.04
-    timeout-minutes: 45        # hard cap — prevents runaway browser sessions
+    # Multiple Playwright scrapers + sentence-transformers scoring often exceeds 45m on hosted runners.
+    # GitHub allows up to 360m per job; 2h is a practical cap while staying well under the next cron (4h).
+    timeout-minutes: 120
 
     defaults:
       run:
