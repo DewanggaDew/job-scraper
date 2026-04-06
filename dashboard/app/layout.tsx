@@ -2,8 +2,9 @@ import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import './globals.css'
 import Link from 'next/link'
+import { cn } from '@/lib/utils'
 
-const inter = Inter({ subsets: ['latin'] })
+const inter = Inter({ subsets: ['latin'], variable: '--font-sans' })
 
 export const metadata: Metadata = {
   title: 'Job Scraper Dashboard',
@@ -16,37 +17,30 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en">
-      <body className={`${inter.className} bg-gray-50 min-h-screen`}>
-        {/* ── Top Navigation ── */}
-        <nav className="bg-white border-b border-gray-200 sticky top-0 z-50">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex items-center justify-between h-14">
-
-              {/* Brand */}
-              <Link href="/" className="flex items-center gap-2 font-bold text-gray-900 text-lg hover:text-green-700 transition-colors">
-                <span className="text-2xl">🎯</span>
-                <span className="hidden sm:inline">Job Scraper</span>
-              </Link>
-
-              {/* Nav links */}
-              <div className="flex items-center gap-1">
-                <NavLink href="/" label="📋 Jobs" />
-                <NavLink href="/tracker" label="📊 Tracker" />
-              </div>
-
+    <html lang="en" className={cn(inter.variable, 'dark font-sans antialiased')}>
+      <body className="min-h-screen bg-background text-foreground">
+        <nav className="sticky top-0 z-50 border-b border-border/80 bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/60">
+          <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+            <Link
+              href="/"
+              className="flex items-center gap-2 text-lg font-semibold tracking-tight text-foreground transition-colors hover:text-primary"
+            >
+              <span className="text-xl" aria-hidden>
+                ◉
+              </span>
+              <span className="hidden sm:inline">Job Scraper</span>
+            </Link>
+            <div className="flex items-center gap-0.5">
+              <NavLink href="/" label="Jobs" />
+              <NavLink href="/tracker" label="Tracker" />
             </div>
           </div>
         </nav>
 
-        {/* ── Page content ── */}
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          {children}
-        </main>
+        <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">{children}</main>
 
-        {/* ── Footer ── */}
-        <footer className="mt-12 border-t border-gray-200 bg-white">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 text-center text-xs text-gray-400">
+        <footer className="mt-16 border-t border-border">
+          <div className="mx-auto max-w-7xl px-4 py-6 text-center text-xs text-muted-foreground sm:px-6 lg:px-8">
             Job Scraper · Runs on GitHub Actions every 4 hours · Built for Dewangga Dewata Indera
           </div>
         </footer>
@@ -59,7 +53,7 @@ function NavLink({ href, label }: { href: string; label: string }) {
   return (
     <Link
       href={href}
-      className="px-3 py-2 rounded-md text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors"
+      className="rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
     >
       {label}
     </Link>
