@@ -49,8 +49,16 @@ _LOCATION_COUNTRY_MAP: dict[str, str] = {
 # Indeed uses data-jk attributes for job IDs and frequently A/B tests layouts.
 
 _SEL = {
-    # Search results page
-    "job_cards": "div.job_seen_beacon, li.css-1ac2h1w, div[data-testid='jobCard'], div.tapItem",
+    # Search results page — Indeed renames css-* classes often; keep broad fallbacks.
+    "job_cards": (
+        "div.job_seen_beacon, "
+        "div.jobsearch-ResultsTile, "
+        "li[data-occludable-job-id], "
+        "div[data-testid='jobCard'], "
+        "div.tapItem, "
+        "td.resultContent, "
+        "div[data-jk]"
+    ),
     "card_title": "h2.jobTitle a, h2[data-testid='jobTitle'] a, a.jcs-JobTitle, a[id^='job_']",
     "card_company": "span[data-testid='company-name'], span.css-1h7lukg, div.company_location span",
     "card_location": "div[data-testid='text-location'], span.css-bnj0lk, div.companyLocation",
@@ -111,13 +119,13 @@ class IndeedScraper(BaseScraper):
             context = browser.new_context(**self._get_browser_context_options())
             page = context.new_page()
 
-            # Block resource types that are unnecessary and slow down scraping
+            # Block heavy assets only. Blocking stylesheets breaks many SPAs
+            # (including Indeed) that gate or layout results via CSS.
             page.route(
                 "**/*",
                 lambda route: (
                     route.abort()
-                    if route.request.resource_type
-                    in ("image", "media", "font", "stylesheet")
+                    if route.request.resource_type in ("image", "media", "font")
                     else route.continue_()
                 ),
             )
@@ -179,8 +187,11 @@ class IndeedScraper(BaseScraper):
             self.log(f"  Page {page_num + 1}: {url}")
 
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=25_000)
+                page.goto(url, wait_until="load", timeout=35_000)
                 self._dismiss_popups(page)
+                page.wait_for_timeout(1_500)
+                page.evaluate("window.scrollTo(0, 400)")
+                page.wait_for_timeout(800)
             except Exception as exc:
                 self.log_error(f"Navigation failed: {url}", exc)
                 break
@@ -195,7 +206,7 @@ class IndeedScraper(BaseScraper):
 
             # Wait for job cards
             try:
-                page.wait_for_selector(_SEL["job_cards"], timeout=12_000)
+                page.wait_for_selector(_SEL["job_cards"], timeout=18_000)
             except PWTimeout:
                 self.log(f"  No job cards found on page {page_num + 1} — stopping.")
                 break

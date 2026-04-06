@@ -41,7 +41,14 @@ _COUNTRY_CONFIG: dict[str, dict] = {
 
 _SEL = {
     # Job card container on the explore/search page
-    "job_cards": "div[data-testid='job-card'], div.JobCardsc__JobcardContainer, div[class*='JobCard']",
+    "job_cards": (
+        "div[data-testid='job-card'], "
+        "article[data-testid='job-card'], "
+        "div.JobCardsc__JobcardContainer, "
+        "div[class*='JobcardContainer'], "
+        "div[class*='JobCard'], "
+        "li[class*='JobCard']"
+    ),
     # Fields inside a job card
     "card_title": "h3[data-testid='job-title'], h3.JobTitle, h3[class*='JobTitle'], h3",
     "card_company": "span[data-testid='company-name'], span.CompanyName, span[class*='CompanyName'], a[class*='Company']",
@@ -171,23 +178,30 @@ class GlintsScraper(BaseScraper):
     # ─── Card parser ─────────────────────────────────────────────────────────
 
     def _parse_card(self, page: "Page", card, country_cfg: dict) -> Optional[Job]:
-        title = self._safe_inner_text(card, _SEL["card_title"])
-        company = self._safe_inner_text(card, _SEL["card_company"])
-        location = self._safe_inner_text(card, _SEL["card_location"])
-        raw_posted = self._safe_inner_text(card, _SEL["card_posted"])
-        raw_type = self._safe_inner_text(card, _SEL["card_type"])
+        # Try each comma-separated fragment separately — a single compound selector
+        # string only ever matches the first alternative in some nested DOM trees.
+        title = self._first_inner_text_from_list(card, _SEL["card_title"])
+        company = self._first_inner_text_from_list(card, _SEL["card_company"])
+        location = self._first_inner_text_from_list(card, _SEL["card_location"])
+        raw_posted = self._first_inner_text_from_list(card, _SEL["card_posted"])
+        raw_type = self._first_inner_text_from_list(card, _SEL["card_type"])
 
-        # Job URL — try data-testid link first, then any /opportunities/jobs/ href
-        url = self._safe_get_attribute(card, _SEL["card_link"], "href")
+        url = self._first_href_from_list(card, _SEL["card_link"])
         if not url:
-            url = self._safe_get_attribute(card, "a", "href")
+            url = self._first_job_opportunity_href(card)
+        if not url:
+            h = self._safe_get_attribute(card, "a", "href")
+            if h and "/opportunities/jobs/" in h:
+                url = h
         if not url:
             return None  # Can't apply without a URL
 
         url = self._normalise_url(url, country_cfg["domain"])
 
-        if not title or not company:
+        if not title.strip():
             return None
+        if not company.strip():
+            company = "Unknown Company"
 
         # Fetch full description from detail page
         description, detail_location, detail_type, detail_posted = (
@@ -237,10 +251,10 @@ class GlintsScraper(BaseScraper):
             except PWTimeout:
                 pass  # Continue anyway — we might still get partial data
 
-            description = self._safe_inner_text(page, _SEL["detail_description"])
-            location = self._safe_inner_text(page, _SEL["detail_location"])
-            work_type = self._safe_inner_text(page, _SEL["detail_type"])
-            posted_date = self._safe_inner_text(page, _SEL["detail_posted"])
+            description = self._first_inner_text_from_list(page, _SEL["detail_description"])
+            location = self._first_inner_text_from_list(page, _SEL["detail_location"])
+            work_type = self._first_inner_text_from_list(page, _SEL["detail_type"])
+            posted_date = self._first_inner_text_from_list(page, _SEL["detail_posted"])
 
         except Exception as exc:
             self.log_error(f"Detail page error ({url[:60]}…)", exc)
@@ -326,6 +340,34 @@ class GlintsScraper(BaseScraper):
         return base + href
 
     # ─── Helpers ─────────────────────────────────────────────────────────────
+
+    def _selector_variants(self, selector_csv: str) -> list[str]:
+        return [s.strip() for s in selector_csv.split(",") if s.strip()]
+
+    def _first_inner_text_from_list(self, card, selector_csv: str) -> str:
+        for sel in self._selector_variants(selector_csv):
+            text = self._safe_inner_text(card, sel)
+            if text:
+                return text
+        return ""
+
+    def _first_href_from_list(self, card, selector_csv: str) -> str:
+        for sel in self._selector_variants(selector_csv):
+            href = self._safe_get_attribute(card, sel, "href")
+            if href:
+                return href
+        return ""
+
+    def _first_job_opportunity_href(self, card) -> str:
+        """Any anchor to a Glints job detail inside the card."""
+        try:
+            for el in card.query_selector_all("a[href]"):
+                href = (el.get_attribute("href") or "").strip()
+                if "/opportunities/jobs/" in href:
+                    return href
+        except Exception:
+            pass
+        return ""
 
     def _should_scrape_country(self, country_name: str) -> bool:
         """

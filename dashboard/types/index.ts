@@ -112,45 +112,45 @@ export interface StatusUpdatePayload {
 export function getMatchColor(label: MatchLabel | null): string {
   switch (label) {
     case 'Strong':
-      return 'text-green-700 bg-green-100 border-green-300'
+      return 'text-emerald-300 bg-emerald-500/15 border-emerald-500/35'
     case 'Decent':
-      return 'text-yellow-700 bg-yellow-100 border-yellow-300'
+      return 'text-amber-300 bg-amber-500/15 border-amber-500/35'
     case 'Low':
-      return 'text-red-700 bg-red-100 border-red-300'
+      return 'text-rose-300 bg-rose-500/15 border-rose-500/35'
     default:
-      return 'text-gray-500 bg-gray-100 border-gray-300'
+      return 'text-muted-foreground bg-muted border-border'
   }
 }
 
 export function getMatchDot(label: MatchLabel | null): string {
   switch (label) {
     case 'Strong':
-      return 'bg-green-500'
+      return 'bg-emerald-400'
     case 'Decent':
-      return 'bg-yellow-400'
+      return 'bg-amber-400'
     case 'Low':
-      return 'bg-red-400'
+      return 'bg-rose-400'
     default:
-      return 'bg-gray-300'
+      return 'bg-muted-foreground/50'
   }
 }
 
 export function getStatusColor(status: JobStatus): string {
   switch (status) {
     case 'new':
-      return 'text-blue-700 bg-blue-100'
+      return 'text-sky-300 bg-sky-500/15 border border-sky-500/30'
     case 'saved':
-      return 'text-indigo-700 bg-indigo-100'
+      return 'text-violet-300 bg-violet-500/15 border border-violet-500/30'
     case 'applied':
-      return 'text-purple-700 bg-purple-100'
+      return 'text-purple-300 bg-purple-500/15 border border-purple-500/30'
     case 'interviewing':
-      return 'text-orange-700 bg-orange-100'
+      return 'text-orange-300 bg-orange-500/15 border border-orange-500/30'
     case 'offer':
-      return 'text-green-700 bg-green-100'
+      return 'text-emerald-300 bg-emerald-500/15 border border-emerald-500/30'
     case 'rejected':
-      return 'text-red-700 bg-red-100'
+      return 'text-rose-300 bg-rose-500/15 border border-rose-500/30'
     default:
-      return 'text-gray-600 bg-gray-100'
+      return 'text-muted-foreground bg-muted border border-border'
   }
 }
 

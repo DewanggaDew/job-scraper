@@ -14,10 +14,23 @@ from scrapers.base import BaseScraper
 
 # ─── JobStreet domain config ──────────────────────────────────────────────────
 
+# SEEK hosts the Jobstreet product on regional subdomains. The legacy
+# www.jobstreet.com.* hosts often serve a thin shell; listings hydrate on
+# my.jobstreet.com (MY) and id.jobstreet.com (ID).
 _DOMAINS: dict[str, str] = {
-    "malaysia": "www.jobstreet.com.my",
-    "indonesia": "www.jobstreet.co.id",
+    "malaysia": "my.jobstreet.com",
+    "indonesia": "id.jobstreet.com",
 }
+
+# Wait for any of these before parsing (layout A/B tests change often).
+_JOB_LIST_SELECTORS = (
+    '[data-automation="jobListing"], '
+    '[data-automation="job-card"], '
+    '[data-automation="normalJob"], '
+    'article[data-job-id], '
+    '[data-testid="job-card"], '
+    'a[href*="/job/"]'
+)
 
 _LOCATION_DOMAIN_MAP: dict[str, str] = {
     "selangor, malaysia": "malaysia",
@@ -120,17 +133,21 @@ class JobStreetScraper(BaseScraper):
         self.log(f"Navigating → {url}")
 
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+            page.goto(url, wait_until="load", timeout=45_000)
         except Exception as exc:
             self.log_error(f"Navigation failed for {url}", exc)
             return []
 
-        # Wait for job cards to appear (JobStreet uses data-automation attributes)
+        # Listings are client-rendered; give the SPA time after load.
         try:
-            page.wait_for_selector(
-                '[data-automation="jobListing"], [data-automation="job-card"], article[data-job-id]',
-                timeout=12_000,
-            )
+            page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2_500)
+
+        # Wait for job cards to appear (JobStreet / SEEK use data-automation + links)
+        try:
+            page.wait_for_selector(_JOB_LIST_SELECTORS, timeout=20_000)
         except Exception:
             self.log(
                 f"No job cards found on {url} (page may be empty or changed layout)"
@@ -147,11 +164,13 @@ class JobStreetScraper(BaseScraper):
 
         try:
             page2_url = url + "&page=2"
-            page.goto(page2_url, wait_until="domcontentloaded", timeout=15_000)
-            page.wait_for_selector(
-                '[data-automation="jobListing"], [data-automation="job-card"], article[data-job-id]',
-                timeout=10_000,
-            )
+            page.goto(page2_url, wait_until="load", timeout=30_000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=12_000)
+            except Exception:
+                pass
+            page.wait_for_timeout(2_000)
+            page.wait_for_selector(_JOB_LIST_SELECTORS, timeout=15_000)
             self._delay()
             page2_jobs = self._extract_jobs_from_page(page, domain, title, location)
             jobs.extend(page2_jobs)
@@ -175,10 +194,12 @@ class JobStreetScraper(BaseScraper):
         # JobStreet uses several possible card selectors across A/B tests
         card_selectors = [
             '[data-automation="jobListing"]',
+            '[data-automation="normalJob"]',
             "article[data-job-id]",
             '[data-testid="job-card"]',
             'div[class*="JobCard"]',
             'div[class*="job-card"]',
+            "li[data-job-id]",
         ]
 
         cards = []
@@ -241,6 +262,25 @@ class JobStreetScraper(BaseScraper):
                     break
             except Exception:
                 continue
+
+        # Fallback: any job detail link inside the card (SEEK / Jobstreet paths)
+        if not url:
+            try:
+                link = card.query_selector('a[href*="/job/"]')
+                if not link:
+                    link = card.query_selector(f'a[href*="{domain}"][href*="/job"]')
+                if link:
+                    href = link.get_attribute("href") or ""
+                    if href:
+                        url = (
+                            href
+                            if href.startswith("http")
+                            else f"https://{domain}{href}"
+                        )
+                    if not title:
+                        title = (link.inner_text() or link.get_attribute("aria-label") or "").strip()
+            except Exception:
+                pass
 
         if not title:
             return None

@@ -36,9 +36,11 @@ _SEL = {
     "job_cards": [
         "div[data-kjs-job-card]",
         "li[data-kjs-job-list-item]",
+        "a[data-kjs-job-link]",
         "div.k-card.k-job-posting-card",
         "div[class*='JobPostingCard']",
         "div[class*='job-card']",
+        "div[class*='JobCard']",
         "article[class*='job']",
     ],
     # Inside a job card
@@ -242,13 +244,18 @@ class KalibrrScraper(BaseScraper):
             self.log(f"  Page {current_page} → {url}")
 
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=25_000)
+                page.goto(url, wait_until="load", timeout=45_000)
             except Exception as exc:
                 self.log_error(f"Navigation failed: {url}", exc)
                 break
 
             self._dismiss_popups(page)
-            self._wait_for_cards(page)
+            try:
+                page.wait_for_load_state("networkidle", timeout=20_000)
+            except Exception:
+                pass
+            page.wait_for_timeout(3_000)
+            self._wait_for_cards(page, timeout=25_000)
             self._delay()
 
             cards = self._find_job_cards(page)
@@ -294,6 +301,8 @@ class KalibrrScraper(BaseScraper):
 
         # ── URL ────────────────────────────────────────────────────────────
         url = self._try_selectors_attr(card, _SEL["card_link"], "href")
+        if not url:
+            url = self._href_from_job_anchors(card)
         if not url:
             return None
         url = self._normalise_url(url)
@@ -400,6 +409,20 @@ class KalibrrScraper(BaseScraper):
 
     # ─── DOM helpers ─────────────────────────────────────────────────────────
 
+    def _href_from_job_anchors(self, card) -> str:
+        """Resolve job URL when the card root is an anchor or wraps job links."""
+        try:
+            h = (card.get_attribute("href") or "").strip()
+            if h and ("/job-board/" in h or ("/c/" in h and "/jobs/" in h)):
+                return h
+            for el in card.query_selector_all("a[href]"):
+                h = (el.get_attribute("href") or "").strip()
+                if "/job-board/" in h or ("/c/" in h and "/jobs/" in h):
+                    return h
+        except Exception:
+            pass
+        return ""
+
     def _find_job_cards(self, page: "Page") -> list:
         """Try each card selector and return the first non-empty result."""
         for sel in _SEL["job_cards"]:
@@ -430,7 +453,7 @@ class KalibrrScraper(BaseScraper):
                 return value.strip()
         return ""
 
-    def _wait_for_cards(self, page: "Page", timeout: int = 15_000) -> None:
+    def _wait_for_cards(self, page: "Page", timeout: int = 25_000) -> None:
         """Wait until at least one known job card selector is visible."""
         for sel in _SEL["job_cards"]:
             try:

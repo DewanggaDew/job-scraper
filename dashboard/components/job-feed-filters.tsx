@@ -1,5 +1,15 @@
 'use client'
 
+import { cn } from '@/lib/utils'
+
+const nativeSelectClass = cn(
+  'h-8 min-w-[9.5rem] cursor-pointer rounded-lg border border-input bg-transparent px-2.5 py-1 text-sm',
+  'text-foreground shadow-none transition-colors outline-none',
+  'focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
+  'disabled:cursor-not-allowed disabled:opacity-50',
+  'dark:bg-input/30'
+)
+
 export function HiddenFilters({
   current,
   skip,
@@ -32,14 +42,14 @@ export function FilterSelect({
   options: { value: string; label: string }[]
 }) {
   return (
-    <form method="GET" className="flex items-center gap-1.5">
+    <form method="GET" className="flex items-center gap-2">
       <HiddenFilters current={current} skip={name} />
-      <label className="text-xs text-gray-500 font-medium whitespace-nowrap">{label}</label>
+      <label className="whitespace-nowrap text-xs font-medium text-muted-foreground">{label}</label>
       <select
         name={name}
         defaultValue={value}
         onChange={(e) => e.currentTarget.form?.requestSubmit()}
-        className="border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white cursor-pointer"
+        className={nativeSelectClass}
       >
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>
@@ -48,7 +58,7 @@ export function FilterSelect({
         ))}
       </select>
       <noscript>
-        <button type="submit" className="px-2 py-1.5 text-xs bg-green-600 text-white rounded-md">
+        <button type="submit" className="h-8 rounded-lg bg-primary px-2 text-xs font-medium text-primary-foreground">
           Go
         </button>
       </noscript>
