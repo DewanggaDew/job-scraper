@@ -4,6 +4,13 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
+import { Button, buttonVariants } from '@/components/ui/button'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Textarea } from '@/components/ui/textarea'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Separator } from '@/components/ui/separator'
+import { cn } from '@/lib/utils'
 import {
   Job,
   JobStatus,
@@ -14,52 +21,62 @@ import {
   getSourceLabel,
   formatPostedDate,
 } from '@/types'
+import { ExternalLink } from 'lucide-react'
 
-// ─── Status options ───────────────────────────────────────────────────────────
-
-const STATUS_OPTIONS: { value: JobStatus; label: string; emoji: string }[] = [
-  { value: 'new', label: 'New', emoji: '🆕' },
-  { value: 'saved', label: 'Saved', emoji: '🔖' },
-  { value: 'applied', label: 'Applied', emoji: '📨' },
-  { value: 'interviewing', label: 'Interviewing', emoji: '💬' },
-  { value: 'offer', label: 'Offer Received', emoji: '🎉' },
-  { value: 'rejected', label: 'Rejected', emoji: '❌' },
+const STATUS_OPTIONS: { value: JobStatus; label: string }[] = [
+  { value: 'new', label: 'New' },
+  { value: 'saved', label: 'Saved' },
+  { value: 'applied', label: 'Applied' },
+  { value: 'interviewing', label: 'Interviewing' },
+  { value: 'offer', label: 'Offer' },
+  { value: 'rejected', label: 'Rejected' },
 ]
-
-// ─── Score dimension config ───────────────────────────────────────────────────
 
 const SCORE_DIMENSIONS = [
   {
     key: 'skills_score' as keyof Job,
-    label: 'Skills Match',
-    description: 'How well your CV skills match the job requirements (semantic similarity)',
+    label: 'Skills match',
+    description: 'Semantic overlap between your CV skills and the posting.',
     weight: '40%',
-    icon: '🛠️',
   },
   {
     key: 'seniority_score' as keyof Job,
-    label: 'Seniority Fit',
-    description: 'Alignment between your experience level and what the role requires',
+    label: 'Seniority fit',
+    description: 'How your level lines up with the role.',
     weight: '25%',
-    icon: '📈',
   },
   {
     key: 'recency_score' as keyof Job,
     label: 'Recency',
-    description: 'How recently the job was posted (newer = higher chance it\'s still open)',
+    description: 'Newer listings score higher.',
     weight: '20%',
-    icon: '🕐',
   },
   {
     key: 'title_score' as keyof Job,
-    label: 'Title Match',
-    description: 'How closely the job title matches your preferred titles',
+    label: 'Title match',
+    description: 'Alignment with your target titles.',
     weight: '15%',
-    icon: '🏷️',
   },
 ]
 
-// ─── Page component ───────────────────────────────────────────────────────────
+function scoreTone(pct: number) {
+  if (pct >= 75) return { bar: 'bg-emerald-500', text: 'text-emerald-400' }
+  if (pct >= 50) return { bar: 'bg-amber-400', text: 'text-amber-400' }
+  return { bar: 'bg-rose-500', text: 'text-rose-400' }
+}
+
+function matchScoreTextClass(label: MatchLabel | null) {
+  switch (label) {
+    case 'Strong':
+      return 'text-emerald-400'
+    case 'Decent':
+      return 'text-amber-400'
+    case 'Low':
+      return 'text-rose-400'
+    default:
+      return 'text-muted-foreground'
+  }
+}
 
 export default function JobDetailPage() {
   const params = useParams()
@@ -70,23 +87,17 @@ export default function JobDetailPage() {
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
 
-  // Edit state
   const [selectedStatus, setSelectedStatus] = useState<JobStatus>('new')
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [descExpanded, setDescExpanded] = useState(false)
 
-  // ── Fetch job ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!jobId) return
 
     async function fetchJob() {
-      const { data, error } = await supabase
-        .from('jobs')
-        .select('*')
-        .eq('id', jobId)
-        .single()
+      const { data, error } = await supabase.from('jobs').select('*').eq('id', jobId).single()
 
       if (error || !data) {
         setNotFound(true)
@@ -101,7 +112,6 @@ export default function JobDetailPage() {
     fetchJob()
   }, [jobId])
 
-  // ── Save status/notes ──────────────────────────────────────────────────────
   async function handleSave() {
     if (!job) return
     setSaving(true)
@@ -112,56 +122,49 @@ export default function JobDetailPage() {
       notes: notes || null,
     }
 
-    // Auto-set applied_at when status changes to applied
     if (selectedStatus === 'applied' && job.status !== 'applied') {
       payload.applied_at = new Date().toISOString()
     }
 
-    const { error } = await supabase
-      .from('jobs')
-      .update(payload)
-      .eq('id', job.id)
+    const { error } = await supabase.from('jobs').update(payload).eq('id', job.id)
 
     setSaving(false)
     if (!error) {
-      setJob((prev) => prev ? { ...prev, status: selectedStatus, notes: notes || null } : null)
+      setJob((prev) => (prev ? { ...prev, status: selectedStatus, notes: notes || null } : null))
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2500)
     }
   }
 
-  // ── Loading ────────────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="max-w-3xl mx-auto space-y-5 animate-pulse">
-        <div className="h-6 bg-gray-200 rounded w-32" />
-        <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-          <div className="h-7 bg-gray-200 rounded w-3/4" />
-          <div className="h-5 bg-gray-200 rounded w-1/2" />
-          <div className="h-4 bg-gray-200 rounded w-1/3" />
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-3">
-          <div className="h-5 bg-gray-200 rounded w-32" />
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="flex items-center gap-3">
-              <div className="h-4 bg-gray-200 rounded w-24" />
-              <div className="h-3 bg-gray-200 rounded flex-1" />
-              <div className="h-4 bg-gray-200 rounded w-8" />
-            </div>
-          ))}
-        </div>
+      <div className="mx-auto max-w-3xl space-y-6">
+        <Skeleton className="h-4 w-24 bg-muted" />
+        <Card className="border-border/80 py-6 shadow-none">
+          <CardContent className="space-y-4">
+            <Skeleton className="h-8 w-3/4 max-w-md bg-muted" />
+            <Skeleton className="h-5 w-1/2 max-w-xs bg-muted" />
+            <Skeleton className="h-10 w-40 bg-muted" />
+          </CardContent>
+        </Card>
+        <Card className="border-border/80 py-6 shadow-none">
+          <CardContent className="space-y-3">
+            {[1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} className="h-12 w-full bg-muted" />
+            ))}
+          </CardContent>
+        </Card>
       </div>
     )
   }
 
   if (notFound || !job) {
     return (
-      <div className="text-center py-20">
-        <p className="text-5xl mb-4">🔍</p>
-        <p className="text-lg font-semibold text-gray-700">Job not found</p>
-        <p className="text-sm text-gray-500 mt-1">It may have been removed from the database.</p>
-        <Link href="/" className="inline-block mt-5 text-sm text-green-700 font-medium hover:underline">
-          ← Back to job feed
+      <div className="mx-auto max-w-md py-20 text-center">
+        <p className="text-sm font-medium text-foreground">Job not found</p>
+        <p className="mt-1 text-sm text-muted-foreground">It may have been removed from the database.</p>
+        <Link href="/" className={cn(buttonVariants({ variant: 'link' }), 'mt-6')}>
+          Back to job feed
         </Link>
       </div>
     )
@@ -172,302 +175,301 @@ export default function JobDetailPage() {
   const matchColorClass = getMatchColor(label)
   const dotClass = getMatchDot(label)
   const locTypeLabel = job.location_type
-    ? { remote: '🌐 Remote', hybrid: '🏠 Hybrid', 'on-site': '🏢 On-site' }[job.location_type] ?? job.location_type
+    ? { remote: 'Remote', hybrid: 'Hybrid', 'on-site': 'On-site' }[job.location_type] ?? job.location_type
     : null
 
   const descText = job.description ?? ''
   const descTrimmed = descText.length > 800 ? descText.slice(0, 800) + '…' : descText
   const showExpandBtn = descText.length > 800
 
-  return (
-    <div className="max-w-3xl mx-auto space-y-5 pb-12">
+  const borderAccent =
+    label === 'Strong'
+      ? 'ring-emerald-500/40'
+      : label === 'Decent'
+        ? 'ring-amber-500/40'
+        : 'ring-border'
 
-      {/* ── Back link ── */}
+  return (
+    <div className="mx-auto max-w-3xl space-y-6 pb-16">
       <div>
         <button
+          type="button"
           onClick={() => router.back()}
-          className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 transition-colors"
+          className="text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           ← Back
         </button>
       </div>
 
-      {/* ── Header card ── */}
-      <div className={`bg-white rounded-xl border-2 overflow-hidden ${label === 'Strong' ? 'border-green-400' : label === 'Decent' ? 'border-yellow-400' : 'border-gray-200'}`}>
-
-        {/* Match score banner */}
-        <div className={`px-6 py-3 flex items-center justify-between ${label === 'Strong' ? 'bg-green-50' : label === 'Decent' ? 'bg-yellow-50' : 'bg-gray-50'}`}>
-          <div className="flex items-center gap-3">
-            <span className={`inline-flex items-center gap-1.5 text-sm font-bold px-3 py-1 rounded-full border ${matchColorClass}`}>
-              <span className={`w-2 h-2 rounded-full ${dotClass}`} />
-              {label ?? 'Unscored'} Match
+      <Card className={cn('gap-0 border-border/80 py-0 shadow-none ring-1', borderAccent)}>
+        <div
+          className={cn(
+            'flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4',
+            label === 'Strong' && 'bg-emerald-500/10',
+            label === 'Decent' && 'bg-amber-500/10',
+            (!label || label === 'Low') && 'bg-muted/30'
+          )}
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <span
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-medium',
+                matchColorClass
+              )}
+            >
+              <span className={cn('size-2 shrink-0 rounded-full', dotClass)} />
+              {label ?? 'Unscored'} match
             </span>
             {label && (
-              <span className="text-2xl font-bold text-gray-800">
+              <span className="text-2xl font-semibold tabular-nums tracking-tight text-foreground">
                 {score.toFixed(0)}
-                <span className="text-base font-normal text-gray-400">/100</span>
+                <span className="text-base font-normal text-muted-foreground">/100</span>
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {job.easy_apply && (
-              <span className="text-xs bg-blue-100 text-blue-700 px-2.5 py-1 rounded-full font-semibold">
-                ⚡ Easy Apply
-              </span>
+              <Badge variant="secondary" className="font-medium">
+                Easy apply
+              </Badge>
             )}
             {job.suggested_cv && (
-              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${job.suggested_cv === 'swe' ? 'bg-indigo-100 text-indigo-700' : 'bg-pink-100 text-pink-700'}`}>
-                📄 Use {job.suggested_cv === 'swe' ? 'SWE / Dev CV' : 'PM CV'}
-              </span>
+              <Badge variant="outline" className="font-medium">
+                {job.suggested_cv === 'swe' ? 'SWE CV' : 'PM CV'}
+              </Badge>
             )}
           </div>
         </div>
 
-        {/* Job details */}
-        <div className="px-6 py-5 space-y-4">
+        <CardContent className="space-y-4 px-6 py-6">
           <div>
-            <h1 className="text-xl font-bold text-gray-900 leading-tight">{job.title}</h1>
-            <p className="text-base text-gray-700 font-medium mt-1">{job.company}</p>
+            <h1 className="text-xl font-semibold leading-tight tracking-tight text-foreground">{job.title}</h1>
+            <p className="mt-1 text-base text-muted-foreground">{job.company}</p>
           </div>
 
-          {/* Meta pills */}
           <div className="flex flex-wrap gap-2">
-            {locTypeLabel && (
-              <MetaPill>{locTypeLabel}</MetaPill>
-            )}
-            {job.location && (
-              <MetaPill>📍 {job.location}</MetaPill>
-            )}
+            {locTypeLabel && <MetaPill>{locTypeLabel}</MetaPill>}
+            {job.location && <MetaPill>{job.location}</MetaPill>}
             <MetaPill>
               <SourceDot source={job.source} />
               {getSourceLabel(job.source)}
             </MetaPill>
-            <MetaPill>🕐 {formatPostedDate(job.posted_at)}</MetaPill>
+            <MetaPill>{formatPostedDate(job.posted_at)}</MetaPill>
             {job.scraped_at && (
               <MetaPill title={`Scraped at ${new Date(job.scraped_at).toLocaleString()}`}>
-                🔄 Scraped {formatPostedDate(job.scraped_at)}
+                Scraped {formatPostedDate(job.scraped_at)}
               </MetaPill>
             )}
           </div>
 
-          {/* Apply button */}
-          <div>
-            <a
-              href={job.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-700 active:bg-green-800 transition-colors"
-            >
-              {job.easy_apply ? '⚡ Easy Apply' : '🔗 Apply Now'}
-              <span className="text-green-200">↗</span>
-            </a>
-          </div>
-        </div>
-      </div>
+          <a
+            href={job.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn(buttonVariants(), 'inline-flex gap-2')}
+          >
+            {job.easy_apply ? 'Easy apply' : 'Apply now'}
+            <ExternalLink className="size-3.5 opacity-70" />
+          </a>
+        </CardContent>
+      </Card>
 
-      {/* ── Score breakdown card ── */}
       {job.match_score !== null && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-          <h2 className="text-base font-bold text-gray-900">Match Score Breakdown</h2>
-
-          <div className="space-y-3">
+        <Card className="border-border/80 shadow-none">
+          <CardHeader className="pb-2">
+            <p className="text-sm font-medium">Match breakdown</p>
+          </CardHeader>
+          <CardContent className="space-y-4">
             {SCORE_DIMENSIONS.map((dim) => {
               const raw = job[dim.key] as number | null
               const pct = Math.round(Math.min(Math.max(raw ?? 0, 0), 100))
-              const barColor =
-                pct >= 75 ? 'bg-green-500' : pct >= 50 ? 'bg-yellow-400' : 'bg-red-400'
-              const textColor =
-                pct >= 75 ? 'text-green-700' : pct >= 50 ? 'text-yellow-700' : 'text-red-600'
-
+              const tone = scoreTone(pct)
               return (
-                <div key={dim.key} className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm">{dim.icon}</span>
-                      <span className="text-sm font-medium text-gray-700">{dim.label}</span>
-                      <span className="text-xs text-gray-400 hidden sm:inline">({dim.weight})</span>
+                <div key={dim.key} className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <span className="text-sm font-medium text-foreground">{dim.label}</span>
+                      <span className="hidden text-xs text-muted-foreground sm:inline">({dim.weight})</span>
                     </div>
-                    <span className={`text-sm font-bold ${textColor}`}>
+                    <span className={cn('text-sm font-semibold tabular-nums', tone.text)}>
                       {raw !== null ? pct : '—'}
                     </span>
                   </div>
-                  <div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
+                  <div className="h-2 overflow-hidden rounded-full bg-muted">
                     <div
-                      className={`h-full rounded-full transition-all duration-700 ${barColor}`}
+                      className={cn('h-full rounded-full transition-all duration-500', tone.bar)}
                       style={{ width: raw !== null ? `${pct}%` : '0%' }}
                     />
                   </div>
-                  <p className="text-xs text-gray-400">{dim.description}</p>
+                  <p className="text-xs text-muted-foreground">{dim.description}</p>
                 </div>
               )
             })}
-          </div>
-
-          {/* Overall */}
-          <div className="mt-2 pt-4 border-t border-gray-100 flex items-center justify-between">
-            <span className="text-sm font-bold text-gray-700">Overall Score</span>
-            <span className={`text-lg font-extrabold ${matchColorClass.split(' ')[0]}`}>
-              {score.toFixed(1)} / 100
-            </span>
-          </div>
-        </div>
+            <Separator />
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">Overall</span>
+              <span className={cn('text-lg font-semibold tabular-nums', matchScoreTextClass(label))}>
+                {score.toFixed(1)} / 100
+              </span>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
-      {/* ── Application tracker card ── */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-        <h2 className="text-base font-bold text-gray-900">Application Tracker</h2>
-
-        {/* Status selector */}
-        <div>
-          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-            Status
-          </label>
-          <div className="flex flex-wrap gap-2">
-            {STATUS_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setSelectedStatus(opt.value)}
-                className={`px-3 py-1.5 rounded-full text-sm font-medium border transition-colors ${
-                  selectedStatus === opt.value
-                    ? getStatusColor(opt.value) + ' border-transparent'
-                    : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
-                }`}
-              >
-                {opt.emoji} {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Notes */}
-        <div>
-          <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-            Notes
-          </label>
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="Add notes — recruiter name, interview feedback, salary range, follow-up date…"
-            rows={3}
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 placeholder-gray-400 resize-none"
-          />
-        </div>
-
-        {/* Applied date display */}
-        {job.applied_at && (
-          <p className="text-xs text-gray-400">
-            ✅ Applied on {new Date(job.applied_at).toLocaleDateString('en-MY', {
-              day: 'numeric', month: 'long', year: 'numeric',
-            })}
-          </p>
-        )}
-
-        {/* Save button */}
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="px-4 py-2 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-700 active:bg-green-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {saving ? 'Saving…' : 'Save Changes'}
-          </button>
-          {saveSuccess && (
-            <span className="text-sm text-green-600 font-medium animate-fade-in">
-              ✓ Saved!
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* ── Job description card ── */}
-      {descText && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-3">
-          <h2 className="text-base font-bold text-gray-900">Job Description</h2>
-          <div className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">
-            {descExpanded ? descText : descTrimmed}
-          </div>
-          {showExpandBtn && (
-            <button
-              onClick={() => setDescExpanded((v) => !v)}
-              className="text-sm text-green-700 font-medium hover:underline"
-            >
-              {descExpanded ? 'Show less ↑' : 'Show full description ↓'}
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* ── Metadata card ── */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h2 className="text-base font-bold text-gray-900 mb-4">Details</h2>
-        <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 text-sm">
-          <MetaField label="Source" value={getSourceLabel(job.source)} />
-          <MetaField label="Location Type" value={locTypeLabel ?? '—'} />
-          <MetaField label="Easy Apply" value={job.easy_apply ? 'Yes ⚡' : 'No'} />
-          <MetaField label="Suggested CV" value={job.suggested_cv === 'swe' ? 'SWE / Dev CV' : job.suggested_cv === 'pm' ? 'PM CV' : '—'} />
-          <MetaField label="Posted" value={job.posted_at ? new Date(job.posted_at).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown'} />
-          <MetaField label="Scraped" value={new Date(job.scraped_at).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' })} />
-          <div className="col-span-2 sm:col-span-3">
-            <MetaField
-              label="Job URL"
-              value={
-                <a
-                  href={job.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-green-700 hover:underline truncate block max-w-sm"
+      <Card className="border-border/80 shadow-none">
+        <CardHeader className="pb-2">
+          <p className="text-sm font-medium">Application tracker</p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</label>
+            <div className="flex flex-wrap gap-2">
+              {STATUS_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setSelectedStatus(opt.value)}
+                  className={cn(
+                    'rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
+                    selectedStatus === opt.value
+                      ? getStatusColor(opt.value)
+                      : 'border-border bg-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                  )}
                 >
-                  {job.url}
-                </a>
-              }
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Notes</label>
+            <Textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Recruiter, feedback, salary, follow-up…"
+              rows={4}
+              className="min-h-[100px] resize-none"
             />
           </div>
-        </dl>
-      </div>
 
+          {job.applied_at && (
+            <p className="text-xs text-muted-foreground">
+              Applied{' '}
+              {new Date(job.applied_at).toLocaleDateString('en-MY', {
+                day: 'numeric',
+                month: 'long',
+                year: 'numeric',
+              })}
+            </p>
+          )}
+
+          <div className="flex items-center gap-3">
+            <Button onClick={handleSave} disabled={saving}>
+              {saving ? 'Saving…' : 'Save changes'}
+            </Button>
+            {saveSuccess && <span className="text-sm text-emerald-400 animate-fade-in">Saved</span>}
+          </div>
+        </CardContent>
+      </Card>
+
+      {descText && (
+        <Card className="border-border/80 shadow-none">
+          <CardHeader className="pb-2">
+            <p className="text-sm font-medium">Description</p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="whitespace-pre-line text-sm leading-relaxed text-muted-foreground">
+              {descExpanded ? descText : descTrimmed}
+            </div>
+            {showExpandBtn && (
+              <Button variant="link" className="h-auto p-0 text-primary" onClick={() => setDescExpanded((v) => !v)}>
+                {descExpanded ? 'Show less' : 'Show full description'}
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      <Card className="border-border/80 shadow-none">
+        <CardHeader className="pb-2">
+          <p className="text-sm font-medium">Details</p>
+        </CardHeader>
+        <CardContent>
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-4 text-sm sm:grid-cols-3">
+            <MetaField label="Source" value={getSourceLabel(job.source)} />
+            <MetaField label="Location type" value={locTypeLabel ?? '—'} />
+            <MetaField label="Easy apply" value={job.easy_apply ? 'Yes' : 'No'} />
+            <MetaField
+              label="Suggested CV"
+              value={job.suggested_cv === 'swe' ? 'SWE' : job.suggested_cv === 'pm' ? 'PM' : '—'}
+            />
+            <MetaField
+              label="Posted"
+              value={
+                job.posted_at
+                  ? new Date(job.posted_at).toLocaleDateString('en-MY', {
+                      day: 'numeric',
+                      month: 'short',
+                      year: 'numeric',
+                    })
+                  : 'Unknown'
+              }
+            />
+            <MetaField
+              label="Scraped"
+              value={new Date(job.scraped_at).toLocaleDateString('en-MY', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })}
+            />
+            <div className="col-span-2 sm:col-span-3">
+              <MetaField
+                label="Job URL"
+                value={
+                  <a
+                    href={job.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="break-all text-primary hover:underline"
+                  >
+                    {job.url}
+                  </a>
+                }
+              />
+            </div>
+          </dl>
+        </CardContent>
+      </Card>
     </div>
   )
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
-
 function MetaPill({ children, title }: { children: React.ReactNode; title?: string }) {
   return (
-    <span
-      title={title}
-      className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 text-gray-600 text-xs font-medium rounded-full"
-    >
+    <Badge variant="outline" title={title} className="h-6 font-normal text-muted-foreground">
       {children}
-    </span>
+    </Badge>
   )
 }
 
-function MetaField({
-  label,
-  value,
-}: {
-  label: string
-  value: React.ReactNode
-}) {
+function MetaField({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div>
-      <dt className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-0.5">{label}</dt>
-      <dd className="text-sm text-gray-800 font-medium">{value}</dd>
+      <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 font-medium text-foreground">{value}</dd>
     </div>
   )
 }
 
 function SourceDot({ source }: { source: string }) {
   const colors: Record<string, string> = {
-    linkedin: 'bg-blue-500',
-    jobstreet: 'bg-orange-500',
-    glints: 'bg-purple-500',
+    linkedin: 'bg-sky-400',
+    jobstreet: 'bg-orange-400',
+    glints: 'bg-violet-400',
     indeed: 'bg-blue-400',
-    kalibrr: 'bg-green-500',
+    kalibrr: 'bg-emerald-400',
   }
-  return (
-    <span
-      className={`inline-block w-1.5 h-1.5 rounded-full mr-0.5 ${colors[source] ?? 'bg-gray-400'}`}
-    />
-  )
+  return <span className={cn('mr-1 inline-block size-1.5 rounded-full', colors[source] ?? 'bg-muted-foreground')} />
 }

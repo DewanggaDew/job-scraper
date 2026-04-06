@@ -3,35 +3,49 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
+import { Button, buttonVariants } from '@/components/ui/button'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import { cn } from '@/lib/utils'
 import {
   Job,
   JobStatus,
-  MatchLabel,
   getMatchColor,
   getMatchDot,
   getSourceLabel,
   formatPostedDate,
-  getStatusColor,
 } from '@/types'
-
-// ─── Pipeline column config ───────────────────────────────────────────────────
+import { LayoutGrid, List } from 'lucide-react'
 
 const PIPELINE_COLUMNS: {
   status: JobStatus
   label: string
-  emoji: string
-  headerColor: string
-  dotColor: string
 }[] = [
-  { status: 'new',          label: 'New',          emoji: '🆕', headerColor: 'bg-blue-50   border-blue-200',   dotColor: 'bg-blue-400' },
-  { status: 'saved',        label: 'Saved',        emoji: '🔖', headerColor: 'bg-indigo-50 border-indigo-200', dotColor: 'bg-indigo-400' },
-  { status: 'applied',      label: 'Applied',      emoji: '📨', headerColor: 'bg-purple-50 border-purple-200', dotColor: 'bg-purple-400' },
-  { status: 'interviewing', label: 'Interviewing', emoji: '💬', headerColor: 'bg-orange-50 border-orange-200', dotColor: 'bg-orange-400' },
-  { status: 'offer',        label: 'Offer',        emoji: '🎉', headerColor: 'bg-green-50  border-green-200',  dotColor: 'bg-green-500' },
-  { status: 'rejected',     label: 'Rejected',     emoji: '❌', headerColor: 'bg-red-50    border-red-200',    dotColor: 'bg-red-400' },
+  { status: 'new', label: 'New' },
+  { status: 'saved', label: 'Saved' },
+  { status: 'applied', label: 'Applied' },
+  { status: 'interviewing', label: 'Interviewing' },
+  { status: 'offer', label: 'Offer' },
+  { status: 'rejected', label: 'Rejected' },
 ]
 
-// ─── Page ─────────────────────────────────────────────────────────────────────
+const TRACK_STATUSES = PIPELINE_COLUMNS.filter((c) => c.status !== 'new')
 
 export default function TrackerPage() {
   const [jobs, setJobs] = useState<Job[]>([])
@@ -40,13 +54,12 @@ export default function TrackerPage() {
   const [view, setView] = useState<'kanban' | 'list'>('kanban')
   const [selectedStatus, setSelectedStatus] = useState<JobStatus | 'all'>('all')
 
-  // ── Fetch jobs ──────────────────────────────────────────────────────────────
   const fetchJobs = async () => {
     setLoading(true)
     const { data, error } = await supabase
       .from('jobs')
       .select('*')
-      .neq('status', 'new')          // tracker focuses on jobs you've engaged with
+      .neq('status', 'new')
       .order('updated_at', { ascending: false })
       .limit(300)
 
@@ -60,7 +73,6 @@ export default function TrackerPage() {
     fetchJobs()
   }, [])
 
-  // ── Status update ───────────────────────────────────────────────────────────
   const updateStatus = async (jobId: string, newStatus: JobStatus) => {
     setUpdatingId(jobId)
     const patch: Record<string, unknown> = { status: newStatus }
@@ -72,7 +84,11 @@ export default function TrackerPage() {
       setJobs((prev) =>
         prev.map((j) =>
           j.id === jobId
-            ? { ...j, status: newStatus, applied_at: newStatus === 'applied' ? new Date().toISOString() : j.applied_at }
+            ? {
+                ...j,
+                status: newStatus,
+                applied_at: newStatus === 'applied' ? new Date().toISOString() : j.applied_at,
+              }
             : j
         )
       )
@@ -80,147 +96,126 @@ export default function TrackerPage() {
     setUpdatingId(null)
   }
 
-  // ── Stats ───────────────────────────────────────────────────────────────────
   const stats = {
-    saved:        jobs.filter((j) => j.status === 'saved').length,
-    applied:      jobs.filter((j) => j.status === 'applied').length,
+    saved: jobs.filter((j) => j.status === 'saved').length,
+    applied: jobs.filter((j) => j.status === 'applied').length,
     interviewing: jobs.filter((j) => j.status === 'interviewing').length,
-    offer:        jobs.filter((j) => j.status === 'offer').length,
-    rejected:     jobs.filter((j) => j.status === 'rejected').length,
+    offer: jobs.filter((j) => j.status === 'offer').length,
+    rejected: jobs.filter((j) => j.status === 'rejected').length,
   }
 
-  // ── Job groups ──────────────────────────────────────────────────────────────
   const jobsByStatus = (status: JobStatus) => jobs.filter((j) => j.status === status)
 
   const filteredJobs =
     selectedStatus === 'all' ? jobs : jobs.filter((j) => j.status === selectedStatus)
 
-  // ── Render ──────────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-6">
-
-      {/* ── Header ── */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Application Tracker</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
-            Track your job applications through the hiring pipeline.
-          </p>
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">Application tracker</h1>
+          <p className="text-sm text-muted-foreground">Pipeline for roles you have moved past &ldquo;new&rdquo;.</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Link
-            href="/"
-            className="px-3 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
-          >
-            + Add from Feed
+        <div className="flex flex-wrap gap-2">
+          <Link href="/" className={buttonVariants({ size: 'sm' })}>
+            Add from feed
           </Link>
-          <button
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => setView(view === 'kanban' ? 'list' : 'kanban')}
-            className="px-3 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors"
+            className="gap-1.5"
           >
-            {view === 'kanban' ? '📋 List View' : '🗂 Kanban View'}
-          </button>
+            {view === 'kanban' ? <List className="size-3.5" /> : <LayoutGrid className="size-3.5" />}
+            {view === 'kanban' ? 'List view' : 'Board view'}
+          </Button>
         </div>
       </div>
 
-      {/* ── Pipeline stats ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        <PipelineStat emoji="🔖" label="Saved"        value={stats.saved}        color="text-indigo-700" bg="bg-indigo-50" />
-        <PipelineStat emoji="📨" label="Applied"      value={stats.applied}      color="text-purple-700" bg="bg-purple-50" />
-        <PipelineStat emoji="💬" label="Interviewing" value={stats.interviewing} color="text-orange-700" bg="bg-orange-50" />
-        <PipelineStat emoji="🎉" label="Offers"       value={stats.offer}        color="text-green-700"  bg="bg-green-50" />
-        <PipelineStat emoji="❌" label="Rejected"     value={stats.rejected}     color="text-red-700"    bg="bg-red-50" />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <PipelineStat label="Saved" value={stats.saved} accent="text-violet-400" />
+        <PipelineStat label="Applied" value={stats.applied} accent="text-purple-400" />
+        <PipelineStat label="Interviewing" value={stats.interviewing} accent="text-orange-400" />
+        <PipelineStat label="Offers" value={stats.offer} accent="text-emerald-400" />
+        <PipelineStat label="Rejected" value={stats.rejected} accent="text-rose-400" />
       </div>
 
-      {/* ── Conversion funnel ── */}
       {stats.applied > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <h2 className="text-sm font-semibold text-gray-700 mb-3">📈 Funnel</h2>
-          <div className="flex items-center gap-2 flex-wrap text-sm">
-            <FunnelStep label="Applied" value={stats.applied} total={stats.applied} color="bg-purple-500" />
-            <FunnelArrow />
-            <FunnelStep label="Interviewing" value={stats.interviewing} total={stats.applied} color="bg-orange-500" />
-            <FunnelArrow />
-            <FunnelStep label="Offers" value={stats.offer} total={stats.applied} color="bg-green-500" />
-          </div>
-          {stats.applied > 0 && (
-            <p className="text-xs text-gray-400 mt-3">
+        <Card className="border-border/80 shadow-none">
+          <CardHeader className="pb-2">
+            <p className="text-sm font-medium">Funnel</p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <FunnelStep label="Applied" value={stats.applied} total={stats.applied} tone="bg-purple-500" />
+              <FunnelArrow />
+              <FunnelStep label="Interviewing" value={stats.interviewing} total={stats.applied} tone="bg-orange-500" />
+              <FunnelArrow />
+              <FunnelStep label="Offers" value={stats.offer} total={stats.applied} tone="bg-emerald-500" />
+            </div>
+            <p className="text-xs text-muted-foreground">
               Interview rate:{' '}
-              <span className="font-semibold text-gray-600">
+              <span className="font-medium text-foreground">
                 {stats.applied > 0 ? Math.round((stats.interviewing / stats.applied) * 100) : 0}%
               </span>
               {stats.interviewing > 0 && (
                 <>
-                  {' · '}Offer rate:{' '}
-                  <span className="font-semibold text-gray-600">
+                  {' '}
+                  · Offer rate:{' '}
+                  <span className="font-medium text-foreground">
                     {Math.round((stats.offer / stats.interviewing) * 100)}%
                   </span>
                 </>
               )}
             </p>
-          )}
-        </div>
+          </CardContent>
+        </Card>
       )}
 
-      {/* ── Loading ── */}
       {loading && (
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3 lg:grid-cols-5">
           {[...Array(5)].map((_, i) => (
-            <div key={i} className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
-              <div className="h-4 bg-gray-200 rounded animate-pulse w-20" />
-              {[...Array(2)].map((_, j) => (
-                <div key={j} className="h-16 bg-gray-100 rounded-lg animate-pulse" />
-              ))}
-            </div>
+            <Card key={i} className="border-border/80 shadow-none">
+              <CardContent className="space-y-3 px-4 py-4">
+                <Skeleton className="h-4 w-20 bg-muted" />
+                <Skeleton className="h-16 w-full bg-muted" />
+                <Skeleton className="h-16 w-full bg-muted" />
+              </CardContent>
+            </Card>
           ))}
         </div>
       )}
 
-      {/* ── Empty state (not loading, no tracked jobs) ── */}
       {!loading && jobs.length === 0 && (
-        <div className="text-center py-20 bg-white rounded-xl border border-dashed border-gray-300">
-          <p className="text-5xl mb-4">📋</p>
-          <p className="text-lg font-semibold text-gray-700">No tracked applications yet</p>
-          <p className="text-sm text-gray-500 mt-1 max-w-sm mx-auto">
-            Open a job from the feed and change its status to "Saved" or "Applied" to start tracking it here.
-          </p>
-          <Link
-            href="/"
-            className="inline-block mt-4 px-4 py-2 text-sm font-semibold text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
-          >
-            Browse Job Feed →
-          </Link>
-        </div>
+        <Card className="border-dashed border-border/80 py-16 shadow-none">
+          <CardContent className="px-6 text-center">
+            <p className="text-sm font-medium text-foreground">No tracked applications yet</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Mark jobs as saved or applied from the feed to see them here.
+            </p>
+            <Link href="/" className={cn(buttonVariants(), 'mt-6')}>
+              Browse job feed
+            </Link>
+          </CardContent>
+        </Card>
       )}
 
-      {/* ── Kanban board ── */}
       {!loading && jobs.length > 0 && view === 'kanban' && (
-        <div className="overflow-x-auto no-scrollbar pb-4">
-          <div className="flex gap-4 min-w-max">
-            {PIPELINE_COLUMNS.filter((col) => col.status !== 'new').map((col) => {
+        <div className="no-scrollbar overflow-x-auto pb-2">
+          <div className="flex min-w-max gap-4">
+            {TRACK_STATUSES.map((col) => {
               const colJobs = jobsByStatus(col.status)
               return (
-                <div
-                  key={col.status}
-                  className="w-64 flex-shrink-0"
-                >
-                  {/* Column header */}
-                  <div className={`flex items-center justify-between px-3 py-2 rounded-t-xl border-t border-x ${col.headerColor}`}>
-                    <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${col.dotColor}`} />
-                      <span className="text-sm font-semibold text-gray-700">{col.emoji} {col.label}</span>
-                    </div>
-                    <span className="text-xs font-bold text-gray-500 bg-white rounded-full px-2 py-0.5 border border-gray-200">
+                <div key={col.status} className="w-64 shrink-0">
+                  <div className="flex items-center justify-between rounded-t-xl border border-b-0 border-border bg-muted/30 px-3 py-2">
+                    <span className="text-sm font-medium">{col.label}</span>
+                    <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1.5 font-mono text-[10px]">
                       {colJobs.length}
-                    </span>
+                    </Badge>
                   </div>
-
-                  {/* Job cards */}
-                  <div className={`min-h-[120px] p-2 space-y-2 rounded-b-xl border ${col.headerColor}`}>
+                  <div className="min-h-[120px] space-y-2 rounded-b-xl border border-border bg-card/30 p-2">
                     {colJobs.length === 0 ? (
-                      <div className="flex items-center justify-center h-16 text-xs text-gray-400 italic">
-                        No jobs here
-                      </div>
+                      <p className="py-6 text-center text-xs text-muted-foreground">Empty</p>
                     ) : (
                       colJobs.map((job) => (
                         <KanbanCard
@@ -239,51 +234,44 @@ export default function TrackerPage() {
         </div>
       )}
 
-      {/* ── List view ── */}
       {!loading && jobs.length > 0 && view === 'list' && (
         <div className="space-y-4">
-          {/* Status filter pills */}
           <div className="flex flex-wrap gap-2">
-            {([['all', 'All'] as const, ...PIPELINE_COLUMNS.filter(c => c.status !== 'new').map(c => [c.status, `${c.emoji} ${c.label}`] as const)]).map(([val, label]) => (
-              <button
-                key={val}
-                onClick={() => setSelectedStatus(val as JobStatus | 'all')}
-                className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-                  selectedStatus === val
-                    ? 'bg-green-600 text-white border border-green-600'
-                    : 'bg-white text-gray-600 border border-gray-300 hover:border-gray-400'
-                }`}
-              >
-                {label}
-                {val !== 'all' && (
-                  <span className={`ml-1.5 text-xs ${selectedStatus === val ? 'text-green-200' : 'text-gray-400'}`}>
-                    {jobsByStatus(val as JobStatus).length}
-                  </span>
-                )}
-              </button>
+            <FilterPill
+              active={selectedStatus === 'all'}
+              onClick={() => setSelectedStatus('all')}
+              label="All"
+            />
+            {TRACK_STATUSES.map((col) => (
+              <FilterPill
+                key={col.status}
+                active={selectedStatus === col.status}
+                onClick={() => setSelectedStatus(col.status)}
+                label={col.label}
+                count={jobsByStatus(col.status).length}
+              />
             ))}
           </div>
 
-          {/* List table */}
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 bg-gray-50">
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Job</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Source</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden md:table-cell">Posted</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden lg:table-cell">Score</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
-                  <th className="px-4 py-3" />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
+          <Card className="overflow-hidden border-border/80 py-0 shadow-none">
+            <Table>
+              <TableHeader>
+                <TableRow className="border-border hover:bg-transparent">
+                  <TableHead className="text-muted-foreground">Job</TableHead>
+                  <TableHead className="hidden text-muted-foreground sm:table-cell">Source</TableHead>
+                  <TableHead className="hidden text-muted-foreground md:table-cell">Posted</TableHead>
+                  <TableHead className="hidden text-muted-foreground lg:table-cell">Score</TableHead>
+                  <TableHead className="text-muted-foreground">Status</TableHead>
+                  <TableHead className="w-[100px]" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {filteredJobs.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="text-center py-12 text-gray-400 text-sm italic">
+                  <TableRow>
+                    <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
                       No jobs in this status
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ) : (
                   filteredJobs.map((job) => (
                     <ListRow
@@ -294,16 +282,46 @@ export default function TrackerPage() {
                     />
                   ))
                 )}
-              </tbody>
-            </table>
-          </div>
+              </TableBody>
+            </Table>
+          </Card>
         </div>
       )}
     </div>
   )
 }
 
-// ─── Kanban card ──────────────────────────────────────────────────────────────
+function FilterPill({
+  active,
+  onClick,
+  label,
+  count,
+}: {
+  active: boolean
+  onClick: () => void
+  label: string
+  count?: number
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-medium transition-colors',
+        active
+          ? 'border-primary bg-primary text-primary-foreground'
+          : 'border-border bg-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+      )}
+    >
+      {label}
+      {count !== undefined && (
+        <span className={cn('text-xs tabular-nums', active ? 'text-primary-foreground/80' : 'text-muted-foreground')}>
+          {count}
+        </span>
+      )}
+    </button>
+  )
+}
 
 function KanbanCard({
   job,
@@ -318,67 +336,48 @@ function KanbanCard({
   const score = job.match_score
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-3 shadow-sm hover:shadow-md transition-shadow">
-      {/* Score + source row */}
-      <div className="flex items-center justify-between mb-1.5">
-        <div className="flex items-center gap-1.5">
-          <span className={`w-2 h-2 rounded-full ${matchDot}`} />
-          {score !== null && (
-            <span className="text-xs font-bold text-gray-700">{score.toFixed(0)}</span>
+    <Card className="gap-0 border-border/80 py-0 shadow-none ring-0">
+      <CardContent className="space-y-2 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={cn('size-2 shrink-0 rounded-full', matchDot)} />
+            {score !== null && (
+              <span className="text-xs font-semibold tabular-nums text-foreground">{score.toFixed(0)}</span>
+            )}
+            <span className="truncate text-xs text-muted-foreground">{getSourceLabel(job.source)}</span>
+          </div>
+          {job.easy_apply && (
+            <Badge variant="outline" className="h-4 shrink-0 px-1 text-[9px]">
+              Easy
+            </Badge>
           )}
-          <span className="text-xs text-gray-400">{getSourceLabel(job.source)}</span>
         </div>
-        {job.easy_apply && (
-          <span className="text-[10px] bg-blue-100 text-blue-700 px-1 py-0.5 rounded-full font-medium">⚡</span>
-        )}
-      </div>
 
-      {/* Title */}
-      <Link
-        href={`/jobs/${job.id}`}
-        className="block text-sm font-semibold text-gray-900 hover:text-green-700 line-clamp-2 leading-snug transition-colors"
-      >
-        {job.title}
-      </Link>
-      <p className="text-xs text-gray-500 mt-0.5">{job.company}</p>
-
-      {/* Location */}
-      {job.location && (
-        <p className="text-xs text-gray-400 mt-1 truncate">📍 {job.location}</p>
-      )}
-
-      {/* Posted date */}
-      <p className="text-xs text-gray-400 mt-1">{formatPostedDate(job.posted_at)}</p>
-
-      {/* CV suggestion */}
-      {job.suggested_cv && (
-        <span className={`inline-block mt-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-          job.suggested_cv === 'swe' ? 'bg-indigo-100 text-indigo-700' : 'bg-pink-100 text-pink-700'
-        }`}>
-          {job.suggested_cv === 'swe' ? 'SWE CV' : 'PM CV'}
-        </span>
-      )}
-
-      {/* Quick status change */}
-      <div className="mt-3 pt-2 border-t border-gray-100">
-        <select
-          disabled={isUpdating}
-          value={job.status}
-          onChange={(e) => onStatusChange(job.id, e.target.value as JobStatus)}
-          className="w-full text-xs border border-gray-200 rounded-md px-2 py-1 bg-gray-50 focus:outline-none focus:ring-1 focus:ring-green-500 cursor-pointer disabled:opacity-50"
+        <Link
+          href={`/jobs/${job.id}`}
+          className="line-clamp-2 text-sm font-medium leading-snug text-foreground hover:text-primary"
         >
-          {PIPELINE_COLUMNS.filter(c => c.status !== 'new').map((col) => (
-            <option key={col.status} value={col.status}>
-              {col.emoji} {col.label}
-            </option>
-          ))}
-        </select>
-      </div>
-    </div>
+          {job.title}
+        </Link>
+        <p className="text-xs text-muted-foreground">{job.company}</p>
+        {job.location && <p className="truncate text-xs text-muted-foreground">{job.location}</p>}
+        <p className="text-xs text-muted-foreground">{formatPostedDate(job.posted_at)}</p>
+
+        {job.suggested_cv && (
+          <Badge variant="secondary" className="h-5 text-[10px]">
+            {job.suggested_cv === 'swe' ? 'SWE CV' : 'PM CV'}
+          </Badge>
+        )}
+
+        <StatusSelect
+          value={job.status}
+          disabled={isUpdating}
+          onChange={(v) => onStatusChange(job.id, v)}
+        />
+      </CardContent>
+    </Card>
   )
 }
-
-// ─── List row ─────────────────────────────────────────────────────────────────
 
 function ListRow({
   job,
@@ -393,105 +392,98 @@ function ListRow({
   const dotClass = getMatchDot(job.match_label)
 
   return (
-    <tr className="hover:bg-gray-50 transition-colors">
-      {/* Job title + company */}
-      <td className="px-4 py-3">
-        <Link href={`/jobs/${job.id}`} className="group">
-          <p className="font-semibold text-gray-900 group-hover:text-green-700 transition-colors text-sm line-clamp-1">
-            {job.title}
-          </p>
-          <p className="text-xs text-gray-500 mt-0.5">{job.company}</p>
-          {job.location && (
-            <p className="text-xs text-gray-400 mt-0.5 hidden lg:block">
-              📍 {job.location}
-            </p>
-          )}
+    <TableRow className="border-border">
+      <TableCell>
+        <Link href={`/jobs/${job.id}`} className="group block space-y-0.5">
+          <p className="line-clamp-1 text-sm font-medium group-hover:text-primary">{job.title}</p>
+          <p className="text-xs text-muted-foreground">{job.company}</p>
+          {job.location && <p className="hidden text-xs text-muted-foreground lg:block">{job.location}</p>}
         </Link>
-      </td>
-
-      {/* Source */}
-      <td className="px-4 py-3 hidden sm:table-cell">
-        <span className="text-xs text-gray-500">{getSourceLabel(job.source)}</span>
-      </td>
-
-      {/* Posted */}
-      <td className="px-4 py-3 hidden md:table-cell">
-        <span className="text-xs text-gray-500">{formatPostedDate(job.posted_at)}</span>
-      </td>
-
-      {/* Score */}
-      <td className="px-4 py-3 hidden lg:table-cell">
+      </TableCell>
+      <TableCell className="hidden sm:table-cell">
+        <span className="text-xs text-muted-foreground">{getSourceLabel(job.source)}</span>
+      </TableCell>
+      <TableCell className="hidden md:table-cell">
+        <span className="text-xs text-muted-foreground">{formatPostedDate(job.posted_at)}</span>
+      </TableCell>
+      <TableCell className="hidden lg:table-cell">
         {job.match_score !== null ? (
-          <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full border ${matchColorClass}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`} />
+          <span
+            className={cn(
+              'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium',
+              matchColorClass
+            )}
+          >
+            <span className={cn('size-1.5 shrink-0 rounded-full', dotClass)} />
             {job.match_score.toFixed(0)}
           </span>
         ) : (
-          <span className="text-xs text-gray-400">—</span>
+          <span className="text-xs text-muted-foreground">—</span>
         )}
-      </td>
-
-      {/* Status dropdown */}
-      <td className="px-4 py-3">
-        <select
-          disabled={isUpdating}
+      </TableCell>
+      <TableCell>
+        <StatusSelect
           value={job.status}
-          onChange={(e) => onStatusChange(job.id, e.target.value as JobStatus)}
-          className="text-xs border border-gray-200 rounded-md px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-green-500 cursor-pointer disabled:opacity-50"
-        >
-          {PIPELINE_COLUMNS.filter(c => c.status !== 'new').map((col) => (
-            <option key={col.status} value={col.status}>
-              {col.emoji} {col.label}
-            </option>
-          ))}
-        </select>
-      </td>
-
-      {/* Action */}
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2">
+          disabled={isUpdating}
+          onChange={(v) => onStatusChange(job.id, v)}
+        />
+      </TableCell>
+      <TableCell>
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center">
           <a
             href={job.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs text-green-700 hover:text-green-900 font-medium whitespace-nowrap"
-            title="Open job posting"
+            className="text-xs font-medium text-primary hover:underline"
           >
-            Apply ↗
+            Apply
           </a>
-          <Link
-            href={`/jobs/${job.id}`}
-            className="text-xs text-gray-500 hover:text-gray-700 font-medium whitespace-nowrap"
-          >
+          <Link href={`/jobs/${job.id}`} className="text-xs text-muted-foreground hover:text-foreground">
             Details
           </Link>
         </div>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   )
 }
 
-// ─── Supporting components ────────────────────────────────────────────────────
-
-function PipelineStat({
-  emoji,
-  label,
+function StatusSelect({
   value,
-  color,
-  bg,
+  disabled,
+  onChange,
 }: {
-  emoji: string
-  label: string
-  value: number
-  color: string
-  bg: string
+  value: JobStatus
+  disabled: boolean
+  onChange: (v: JobStatus) => void
 }) {
   return (
-    <div className={`${bg} rounded-xl border border-gray-200 p-3 text-center`}>
-      <p className="text-lg">{emoji}</p>
-      <p className={`text-2xl font-bold ${color} mt-0.5`}>{value}</p>
-      <p className="text-xs text-gray-500 mt-0.5">{label}</p>
-    </div>
+    <Select
+      value={value}
+      onValueChange={(v) => onChange(v as JobStatus)}
+      disabled={disabled}
+    >
+      <SelectTrigger className="h-8 w-full min-w-0 text-xs" size="sm">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {TRACK_STATUSES.map((col) => (
+          <SelectItem key={col.status} value={col.status}>
+            {col.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+function PipelineStat({ label, value, accent }: { label: string; value: number; accent: string }) {
+  return (
+    <Card className="border-border/80 py-3 shadow-none ring-1 ring-border/60">
+      <CardContent className="space-y-0.5 px-3 py-0">
+        <p className={cn('text-2xl font-semibold tabular-nums tracking-tight', accent)}>{value}</p>
+        <p className="text-xs text-muted-foreground">{label}</p>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -499,29 +491,27 @@ function FunnelStep({
   label,
   value,
   total,
-  color,
+  tone,
 }: {
   label: string
   value: number
   total: number
-  color: string
+  tone: string
 }) {
   const pct = total > 0 ? Math.round((value / total) * 100) : 0
   return (
     <div className="flex items-center gap-2">
-      <div className="h-2 rounded-full w-24 bg-gray-100 overflow-hidden">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+      <div className="h-2 w-24 overflow-hidden rounded-full bg-muted">
+        <div className={cn('h-full rounded-full', tone)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs font-medium text-gray-700">
-        {value} <span className="text-gray-400 font-normal">{label}</span>
-        {total > 0 && value > 0 && (
-          <span className="text-gray-400 font-normal"> ({pct}%)</span>
-        )}
+      <span className="text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">{value}</span> {label}
+        {total > 0 && value > 0 && <span className="text-muted-foreground"> ({pct}%)</span>}
       </span>
     </div>
   )
 }
 
 function FunnelArrow() {
-  return <span className="text-gray-300 font-bold text-lg">›</span>
+  return <span className="text-muted-foreground">›</span>
 }

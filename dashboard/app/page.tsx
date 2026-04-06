@@ -337,7 +337,7 @@ function JobCard({ job }: { job: Job }) {
             </Badge>
           )}
           {job.location && (
-            <Badge variant="outline" className="h-5 max-w-[11rem] truncate font-normal text-muted-foreground">
+            <Badge variant="outline" className="h-5 max-w-44 truncate font-normal text-muted-foreground">
               {job.location}
             </Badge>
           )}
