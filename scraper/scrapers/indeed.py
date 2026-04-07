@@ -204,19 +204,27 @@ class IndeedScraper(BaseScraper):
                 )
                 break
 
-            # Wait for job cards
+            # Wait for job cards (layout varies; timeout is non-fatal)
             try:
                 page.wait_for_selector(_SEL["job_cards"], timeout=18_000)
             except PWTimeout:
-                self.log(f"  No job cards found on page {page_num + 1} — stopping.")
-                break
+                self.log(
+                    f"  Job-card selector wait timed out on page {page_num + 1} "
+                    "(will try data-jk fallback)."
+                )
 
             self._delay(extra_min=0.5, extra_max=1.5)
 
             cards = self._safe_query_all(page, _SEL["job_cards"])
-            self.log(f"  Found {len(cards)} job cards")
+            self.log(f"  Found {len(cards)} job cards (selector query)")
 
             if not cards:
+                fb = self._indeed_jobs_from_data_jk(page, cfg, country_name)
+                if fb:
+                    self.log(f"  data-jk fallback collected {len(fb)} jobs")
+                    jobs.extend(fb)
+                else:
+                    self.log(f"  No jobs resolved on page {page_num + 1} — stopping.")
                 break
 
             page_jobs = self._extract_cards(page, cards, cfg, country_name)
@@ -227,6 +235,90 @@ class IndeedScraper(BaseScraper):
                 break
 
             self._delay()
+
+        return jobs
+
+    def _indeed_jobs_from_data_jk(
+        self,
+        page: "Page",
+        cfg: dict,
+        country_name: str,
+    ) -> list[Job]:
+        """
+        Fallback when Indeed renames list CSS: collect [data-jk] tiles and job links.
+        """
+        try:
+            rows = page.evaluate(
+                """() => {
+                    const out = [];
+                    const seen = new Set();
+                    const roots = document.querySelectorAll('[data-jk]');
+                    roots.forEach((root) => {
+                        const jk = root.getAttribute('data-jk');
+                        if (!jk || seen.has(jk)) return;
+                        seen.add(jk);
+                        const a = root.querySelector(
+                          'h2 a, h2.jobTitle a, a.jcs-JobTitle, a[data-jk]'
+                        );
+                        let title = '';
+                        let href = '';
+                        if (a) {
+                            title = (a.innerText || '').trim();
+                            href = a.href || a.getAttribute('href') || '';
+                        }
+                        if (!title) {
+                            const t = (root.innerText || '').trim().split(/\\n/)[0];
+                            title = (t || '').trim();
+                        }
+                        out.push({ jk, title, href });
+                    });
+                    return out;
+                }"""
+            )
+        except Exception:
+            return []
+
+        jobs: list[Job] = []
+        for row in rows[: self._max_jobs]:
+            try:
+                jk = (row.get("jk") or "").strip()
+                title = (row.get("title") or "").strip()
+                if not jk or not title:
+                    continue
+                href = (row.get("href") or "").strip()
+                job_url = href if href.startswith("http") else ""
+                if not job_url:
+                    job_url = f"https://{cfg['domain']}/viewjob?jk={jk}"
+
+                description, detail_location, detail_type, detail_posted = (
+                    self._get_job_description(page, None, job_url, cfg)
+                )
+                location = detail_location or country_name
+                raw_posted = detail_posted
+
+                location_type = _parse_work_type(detail_type) or detect_location_type(
+                    title, description or "", location
+                )
+
+                company = "Unknown Company"
+
+                jobs.append(
+                    Job(
+                        id=make_job_id(title, company, location),
+                        title=title,
+                        company=company,
+                        location=location.strip() if location else None,
+                        location_type=location_type,
+                        source=self.source_name,
+                        url=job_url,
+                        description=description,
+                        posted_at=parse_posted_date(raw_posted),
+                        easy_apply=False,
+                    )
+                )
+                self._delay(extra_min=0.3, extra_max=0.7)
+            except Exception as exc:
+                self.log_error("Indeed data-jk row error", exc)
 
         return jobs
 
@@ -375,22 +467,23 @@ class IndeedScraper(BaseScraper):
         """
         description = location = work_type = posted_date = ""
 
-        # ── Strategy 1: side panel ────────────────────────────────────────────
-        try:
-            title_el = card.query_selector("h2.jobTitle a, a.jcs-JobTitle")
-            if title_el:
-                title_el.click()
-                # Indeed loads the detail panel in a div on the right side
-                page.wait_for_selector(_SEL["detail_description"], timeout=6_000)
-                description = self._safe_inner_text(page, _SEL["detail_description"])
-                location = self._safe_inner_text(page, _SEL["detail_location"])
-                work_type = self._safe_inner_text(page, _SEL["detail_type"])
-                posted_date = self._safe_inner_text(page, _SEL["detail_posted"])
+        # ── Strategy 1: side panel (requires a result card element) ───────────
+        if card is not None:
+            try:
+                title_el = card.query_selector("h2.jobTitle a, a.jcs-JobTitle")
+                if title_el:
+                    title_el.click()
+                    # Indeed loads the detail panel in a div on the right side
+                    page.wait_for_selector(_SEL["detail_description"], timeout=6_000)
+                    description = self._safe_inner_text(page, _SEL["detail_description"])
+                    location = self._safe_inner_text(page, _SEL["detail_location"])
+                    work_type = self._safe_inner_text(page, _SEL["detail_type"])
+                    posted_date = self._safe_inner_text(page, _SEL["detail_posted"])
 
-                if description:
-                    return description, location, work_type, posted_date
-        except Exception:
-            pass
+                    if description:
+                        return description, location, work_type, posted_date
+            except Exception:
+                pass
 
         # ── Strategy 2: direct navigation ────────────────────────────────────
         if not job_url:

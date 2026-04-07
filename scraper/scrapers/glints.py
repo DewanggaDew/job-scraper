@@ -99,12 +99,6 @@ class GlintsScraper(BaseScraper):
             context = browser.new_context(**self._get_browser_context_options())
             page = context.new_page()
 
-            # Block images and fonts to speed up scraping
-            page.route(
-                "**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,eot}",
-                lambda route: route.abort(),
-            )
-
             for title in self.titles:
                 for country_name, country_cfg in _COUNTRY_CONFIG.items():
                     # Only scrape countries relevant to the configured locations
@@ -151,15 +145,29 @@ class GlintsScraper(BaseScraper):
         url = self._build_search_url(title, country_cfg)
 
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            page.goto(url, wait_until="load", timeout=45_000)
             self._dismiss_popups(page)
-            self._wait_for_job_cards(page)
+            try:
+                page.wait_for_load_state("networkidle", timeout=20_000)
+            except Exception:
+                pass
+            page.wait_for_timeout(2_500)
+            self._wait_for_job_cards(page, timeout=22_000)
         except Exception as exc:
             self.log_error(f"Could not load search page: {url}", exc)
             return jobs
 
         # Scroll / load-more to fetch more listings (Glints uses infinite scroll)
         self._scroll_to_load_more(page, max_scrolls=4)
+
+        # Prefer harvesting job links from the live DOM — card wrappers change often.
+        link_jobs = self._extract_jobs_from_glints_links(page, country_cfg, title)
+        if link_jobs:
+            self.log(f"  Found {len(link_jobs)} job links on page for '{title}'")
+            for job in link_jobs[: self._max_jobs]:
+                jobs.append(job)
+                self._delay(extra_min=0.5, extra_max=1.5)
+            return jobs
 
         cards = self._safe_query_all(page, _SEL["job_cards"])
         self.log(f"  Found {len(cards)} cards on page for '{title}'")
@@ -368,6 +376,100 @@ class GlintsScraper(BaseScraper):
         except Exception:
             pass
         return ""
+
+    def _extract_jobs_from_glints_links(
+        self,
+        page: "Page",
+        country_cfg: dict,
+        search_title_hint: str,
+    ) -> list[Job]:
+        """
+        Collect unique ``/opportunities/jobs/`` links from the document.
+        Card-level selectors often match unrelated nodes; anchors stay stable.
+        """
+        try:
+            rows = page.evaluate(
+                """() => {
+                    const seen = new Set();
+                    const out = [];
+                    const host = window.location.host || 'glints.com';
+                    for (const a of document.querySelectorAll('a[href]')) {
+                        let href = a.getAttribute('href') || '';
+                        if (!href.includes('/opportunities/jobs/')) continue;
+                        if (href.startsWith('/')) {
+                            href = 'https://' + host + href;
+                        }
+                        const u = href.split('#')[0].split('?')[0];
+                        if (seen.has(u)) continue;
+                        seen.add(u);
+                        const t = (a.innerText || a.getAttribute('aria-label') || '')
+                            .trim().replace(/\\s+/g, ' ');
+                        out.push({ href: u, anchorText: t.slice(0, 400) });
+                    }
+                    return out;
+                }"""
+            )
+        except Exception:
+            return []
+
+        if not rows:
+            return []
+
+        jobs: list[Job] = []
+        for row in rows:
+            if len(jobs) >= self._max_jobs:
+                break
+            try:
+                href = (row.get("href") or "").strip()
+                if not href:
+                    continue
+                url = self._normalise_url(href, country_cfg["domain"])
+                anchor_title = (row.get("anchorText") or "").strip()
+
+                description, detail_location, work_type, posted_date = (
+                    self._get_job_details(page, url)
+                )
+                detail_title = self._first_inner_text_from_list(
+                    page, _SEL["detail_title"]
+                )
+                title = (
+                    anchor_title
+                    if len(anchor_title) > 2
+                    else detail_title.strip()
+                )
+                if not title:
+                    title = search_title_hint or "Job listing"
+
+                company = self._first_inner_text_from_list(
+                    page, _SEL["detail_company"]
+                ).strip() or "Unknown Company"
+                location = (
+                    self._first_inner_text_from_list(page, _SEL["detail_location"])
+                    or detail_location
+                ).strip()
+
+                loc_type = _parse_location_type(work_type) or detect_location_type(
+                    title, description or "", location
+                )
+
+                jobs.append(
+                    Job(
+                        id=make_job_id(title, company, location),
+                        title=title.strip(),
+                        company=company,
+                        location=location or None,
+                        location_type=loc_type,
+                        source=self.source_name,
+                        url=url,
+                        description=description,
+                        posted_at=parse_posted_date(posted_date),
+                        easy_apply=False,
+                    )
+                )
+            except Exception as exc:
+                self.log_error("Glints link job error", exc)
+
+        return jobs
 
     def _should_scrape_country(self, country_name: str) -> bool:
         """

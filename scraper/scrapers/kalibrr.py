@@ -24,8 +24,11 @@ except ImportError:
 # Kalibrr operates primarily in Indonesia (kalibrr.id) and the Philippines.
 # We target the Indonesian domain since that matches the configured locations.
 
-_BASE_URL = "https://www.kalibrr.id"
-_SEARCH_URL = f"{_BASE_URL}/job-board"
+# Kalibrr merged regional sites onto kalibrr.com; /job-board on .id redirects away
+# from SSR job data. The Indonesian job search home is id-ID/home (see __NEXT_DATA__).
+_BASE_URL = "https://www.kalibrr.com"
+_SEARCH_PATH = "/id-ID/home"
+_SEARCH_URL = f"{_BASE_URL}{_SEARCH_PATH}"
 
 # ─── CSS Selectors ────────────────────────────────────────────────────────────
 # Kalibrr uses a server-rendered + React-hydrated frontend.
@@ -243,6 +246,8 @@ class KalibrrScraper(BaseScraper):
             url = self._build_search_url(title, location, page_num=current_page)
             self.log(f"  Page {current_page} → {url}")
 
+            n_before = len(jobs)
+
             try:
                 page.goto(url, wait_until="load", timeout=45_000)
             except Exception as exc:
@@ -254,40 +259,185 @@ class KalibrrScraper(BaseScraper):
                 page.wait_for_load_state("networkidle", timeout=20_000)
             except Exception:
                 pass
-            page.wait_for_timeout(3_000)
-            self._wait_for_cards(page, timeout=25_000)
-            self._delay()
+            page.wait_for_timeout(2_000)
 
-            cards = self._find_job_cards(page)
-            if not cards:
+            # Primary: Next.js embeds jobs in #__NEXT_DATA__ (reliable vs hydrated cards).
+            page_jobs = self._extract_jobs_from_next_data(page)
+            if page_jobs:
                 self.log(
-                    f"  ⚠️  No job cards found on page {current_page} — "
-                    "stopping pagination."
+                    f"  Found {len(page_jobs)} jobs from __NEXT_DATA__ "
+                    f"(page {current_page})"
                 )
-                break
-
-            self.log(f"  Found {len(cards)} cards on page {current_page}")
-
-            for card in cards:
-                if len(jobs) >= self._max_jobs:
-                    break
-                try:
-                    job = self._parse_card(card, page)
-                    if job and job.id not in seen_ids:
-                        jobs.append(job)
+                for job in page_jobs:
+                    if len(jobs) >= self._max_jobs:
+                        break
+                    if job.id not in seen_ids:
                         seen_ids.add(job.id)
-                        self._delay(extra_min=0.5, extra_max=1.5)
-                except Exception as exc:
-                    self.log_error("Card parse error", exc)
+                        jobs.append(job)
+                        self._delay(extra_min=0.3, extra_max=0.8)
+            else:
+                self._wait_for_cards(page, timeout=20_000)
+                self._delay()
+                cards = self._find_job_cards(page)
+                if not cards:
+                    self.log(
+                        f"  ⚠️  No job cards found on page {current_page} — "
+                        "stopping pagination."
+                    )
+                    break
+                self.log(f"  Found {len(cards)} cards on page {current_page}")
+                for card in cards:
+                    if len(jobs) >= self._max_jobs:
+                        break
+                    try:
+                        job = self._parse_card(card, page)
+                        if job and job.id not in seen_ids:
+                            seen_ids.add(job.id)
+                            jobs.append(job)
+                            self._delay(extra_min=0.5, extra_max=1.5)
+                    except Exception as exc:
+                        self.log_error("Card parse error", exc)
 
-            # Check if there's a next page
-            if not self._has_next_page(page):
+            added = len(jobs) - n_before
+            if added == 0:
+                break
+            if not self._kalibrr_should_fetch_next_page(
+                page, current_page, max_pages, len(jobs), added
+            ):
                 break
 
             current_page += 1
             self._delay()
 
         return jobs
+
+    def _kalibrr_next_meta(self, page: "Page") -> dict:
+        try:
+            return page.evaluate(
+                """() => {
+                    const el = document.getElementById('__NEXT_DATA__');
+                    if (!el) return {};
+                    try {
+                        const d = JSON.parse(el.textContent);
+                        const pp = d.props?.pageProps || {};
+                        return {
+                            count: Number(pp.count) || 0,
+                            jobslen: (pp.jobs || []).length,
+                        };
+                    } catch (e) {
+                        return {};
+                    }
+                }"""
+            )
+        except Exception:
+            return {}
+
+    def _kalibrr_should_fetch_next_page(
+        self,
+        page: "Page",
+        current_page: int,
+        max_pages: int,
+        total_collected: int,
+        added_this_page: int,
+    ) -> bool:
+        if total_collected >= self._max_jobs or current_page >= max_pages:
+            return False
+        if added_this_page <= 0:
+            return False
+        meta = self._kalibrr_next_meta(page)
+        total = int(meta.get("count") or 0)
+        if total and total_collected >= total:
+            return False
+        return True
+
+    def _extract_jobs_from_next_data(self, page: "Page") -> list[Job]:
+        try:
+            records = page.evaluate(
+                """() => {
+                    const el = document.getElementById('__NEXT_DATA__');
+                    if (!el) return [];
+                    try {
+                        const d = JSON.parse(el.textContent);
+                        const jobs = d.props?.pageProps?.jobs;
+                        return Array.isArray(jobs) ? jobs : [];
+                    } catch (e) {
+                        return [];
+                    }
+                }"""
+            )
+        except Exception:
+            return []
+
+        if not records:
+            return []
+
+        out: list[Job] = []
+        for rec in records:
+            job = self._job_from_kalibrr_next_record(rec)
+            if job:
+                out.append(job)
+        return out
+
+    @staticmethod
+    def _strip_html_basic(html: str) -> str:
+        if not html:
+            return ""
+        t = re.sub(r"<[^>]+>", " ", html)
+        return re.sub(r"\s+", " ", t).strip()[:8000]
+
+    def _kalibrr_location_from_record(self, rec: dict) -> str:
+        gl = rec.get("googleLocation")
+        if isinstance(gl, dict):
+            for key in ("name", "formatted_address", "formattedAddress", "label"):
+                v = gl.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+        if isinstance(gl, str) and gl.strip():
+            return gl.strip()
+        return ""
+
+    def _job_from_kalibrr_next_record(self, rec: object) -> Optional[Job]:
+        if not isinstance(rec, dict):
+            return None
+        title = (rec.get("name") or "").strip()
+        jid = rec.get("id")
+        if not title or jid is None:
+            return None
+
+        url = f"{_SEARCH_URL}/{jid}"
+        company = (rec.get("companyName") or "").strip()
+        comp = rec.get("company")
+        if not company and isinstance(comp, dict):
+            company = (comp.get("name") or "").strip()
+        if not company:
+            company = "Unknown Company"
+
+        location = self._kalibrr_location_from_record(rec)
+        description = self._strip_html_basic(str(rec.get("description") or ""))
+
+        raw_date = rec.get("activationDate") or rec.get("createdAt") or ""
+        posted_at = parse_posted_date(str(raw_date)) if raw_date else None
+
+        loc_type: Optional[LocationType] = None
+        if rec.get("isWorkFromHome"):
+            loc_type = LocationType.REMOTE
+        elif rec.get("isHybrid"):
+            loc_type = LocationType.HYBRID
+        if loc_type is None:
+            loc_type = detect_location_type(title, description, location)
+
+        return Job(
+            id=make_job_id(title, company, location),
+            title=title,
+            company=company,
+            location=location or None,
+            location_type=loc_type,
+            source=self.source_name,
+            url=url,
+            description=description or None,
+            posted_at=posted_at,
+            easy_apply=False,
+        )
 
     # ─── Card parser ──────────────────────────────────────────────────────────
 
@@ -503,24 +653,19 @@ class KalibrrScraper(BaseScraper):
     @staticmethod
     def _build_search_url(title: str, location: str, page_num: int = 1) -> str:
         """
-        Build a Kalibrr job-board search URL.
+        Build a Kalibrr search URL on kalibrr.com (id-ID home).
 
-        Format:
-            https://www.kalibrr.id/job-board?keyword=<title>&location=<city>&page=<n>
-
-        Example:
-            https://www.kalibrr.id/job-board?keyword=software+engineer&location=Jakarta&page=1
+        Pagination uses the ``param`` query key (page index as string).
         """
         # Strip country name from location (e.g. "Jakarta, Indonesia" → "Jakarta")
         city = re.sub(r",?\s*indonesia$", "", location, flags=re.IGNORECASE).strip()
 
-        params: dict[str, str | int] = {
+        params: dict[str, str] = {
             "keyword": title,
             "location": city,
-            "sort": "freshness",  # sort by most recently posted
+            "sort": "freshness",
+            "param": str(max(1, page_num)),
         }
-        if page_num > 1:
-            params["page"] = page_num
 
         return f"{_SEARCH_URL}?{urlencode(params)}"
 

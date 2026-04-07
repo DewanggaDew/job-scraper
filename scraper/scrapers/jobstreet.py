@@ -67,12 +67,12 @@ class JobStreetScraper(BaseScraper):
             )
             page: Page = context.new_page()
 
-            # Reduce noise: block images, fonts, analytics to speed up scraping
+            # Do not block images — SEEK/Jobstreet cards can depend on media/lazy paint.
             page.route(
                 "**/*",
                 lambda route: (
                     route.abort()
-                    if route.request.resource_type in ("image", "media", "font")
+                    if route.request.resource_type in ("font",)
                     else route.continue_()
                 ),
             )
@@ -145,7 +145,14 @@ class JobStreetScraper(BaseScraper):
             pass
         page.wait_for_timeout(2_500)
 
-        # Wait for job cards to appear (JobStreet / SEEK use data-automation + links)
+        # Primary path: SEEK embeds the first results page in window.SEEK_REDUX_DATA
+        # (inline script). This is reliable when the visible DOM uses hashed classes.
+        jobs = self._extract_jobs_from_seek_redux(page, domain)
+        if jobs:
+            self._delay()
+            return jobs
+
+        # Fallback: wait for classic job-card selectors
         try:
             page.wait_for_selector(_JOB_LIST_SELECTORS, timeout=20_000)
         except Exception:
@@ -170,14 +177,120 @@ class JobStreetScraper(BaseScraper):
             except Exception:
                 pass
             page.wait_for_timeout(2_000)
-            page.wait_for_selector(_JOB_LIST_SELECTORS, timeout=15_000)
+            page2_jobs = self._extract_jobs_from_seek_redux(page, domain)
+            if not page2_jobs:
+                try:
+                    page.wait_for_selector(_JOB_LIST_SELECTORS, timeout=15_000)
+                except Exception:
+                    pass
+                page2_jobs = self._extract_jobs_from_page(
+                    page, domain, title, location
+                )
             self._delay()
-            page2_jobs = self._extract_jobs_from_page(page, domain, title, location)
             jobs.extend(page2_jobs)
         except Exception:
             pass  # Page 2 is a bonus — don't fail if unavailable
 
         return jobs
+
+    def _extract_jobs_from_seek_redux(
+        self,
+        page: Page,
+        domain: str,
+    ) -> list[Job]:
+        """
+        Read the first page of results from SEEK's SSR payload (window.SEEK_REDUX_DATA).
+        The visible listing UI often uses unstable hashed class names; this object is stable.
+        """
+        try:
+            raw = page.evaluate(
+                """() => {
+                    const d = window.SEEK_REDUX_DATA;
+                    if (!d || !d.results || !d.results.results) return [];
+                    const jobs = d.results.results.jobs;
+                    return Array.isArray(jobs) ? jobs : [];
+                }"""
+            )
+        except Exception:
+            return []
+
+        if not raw:
+            return []
+
+        jobs: list[Job] = []
+        for item in raw[: self._max_jobs]:
+            job = self._job_from_seek_redux_item(item, domain)
+            if job:
+                jobs.append(job)
+        return jobs
+
+    def _job_from_seek_redux_item(
+        self,
+        item: object,
+        domain: str,
+    ) -> Optional[Job]:
+        if not isinstance(item, dict):
+            return None
+
+        title = (item.get("title") or "").strip()
+        if not title:
+            return None
+
+        jid = str(item.get("id") or "").strip()
+        url = f"https://{domain}/job/{jid}" if jid else f"https://{domain}"
+
+        advertiser = item.get("advertiser") if isinstance(item.get("advertiser"), dict) else {}
+        company = (
+            (item.get("companyName") or "").strip()
+            or (advertiser.get("description") or "").strip()
+            or "Unknown Company"
+        )
+
+        location = ""
+        locs = item.get("locations")
+        if isinstance(locs, list) and locs and isinstance(locs[0], dict):
+            location = (locs[0].get("label") or "").strip()
+
+        desc_parts: list[str] = []
+        teaser = item.get("teaser")
+        if isinstance(teaser, str) and teaser.strip():
+            desc_parts.append(teaser.strip())
+        bullets = item.get("bulletPoints")
+        if isinstance(bullets, list):
+            for b in bullets:
+                if isinstance(b, str) and b.strip():
+                    desc_parts.append(b.strip())
+        description = "\n".join(desc_parts)[:5000] if desc_parts else ""
+
+        raw_date = item.get("listingDate") or item.get("listingDateDisplay") or ""
+        posted_at = parse_posted_date(str(raw_date)) if raw_date else None
+
+        wa = item.get("workArrangements") if isinstance(item.get("workArrangements"), dict) else {}
+        wt = item.get("workTypes") if isinstance(item.get("workTypes"), list) else []
+        wt_text = " ".join(str(x) for x in wt if x)
+        arrangement = (wa.get("displayText") or "").strip()
+        card_blob = f"{title} {wt_text} {arrangement} {location}"
+
+        location_type = detect_location_type(
+            title,
+            f"{card_blob}\n{description}",
+            location,
+        )
+
+        job_id = make_job_id(title, company, location)
+
+        return Job(
+            id=job_id,
+            title=title,
+            company=company,
+            location=location or None,
+            location_type=location_type,
+            source=self.source_name,
+            url=url,
+            description=description or None,
+            posted_at=posted_at,
+            easy_apply=False,
+        )
 
     # ─── Job extraction ───────────────────────────────────────────────────────
 
