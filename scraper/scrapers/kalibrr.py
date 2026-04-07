@@ -5,6 +5,8 @@ import time
 from typing import Optional
 from urllib.parse import quote_plus, urlencode
 
+from apis.embedded_payloads import kalibrr_jobs_from_html
+from apis.http_fetch import fetch_html
 from core.date_parser import parse_posted_date
 from core.deduplicator import make_job_id
 from core.models import Job, LocationType
@@ -156,16 +158,30 @@ class KalibrrScraper(BaseScraper):
     Kalibrr is popular in Indonesia for technology, business, and creative
     roles — particularly strong for Jakarta-based positions.
 
-    Uses Playwright to render the React-hydrated pages, extract job cards from
-    the search results, and then visit each detail page for the full description.
+    Primary method: HTTP GET of ``/id-ID/home`` search URLs and parse
+    ``#__NEXT_DATA__`` (same as SSR).  Fallback: Playwright with card/DOM parsing
+    and optional detail pages.
 
     Search URL format:
-        https://www.kalibrr.id/job-board?keyword=software+engineer&location=Jakarta
+        https://www.kalibrr.com/id-ID/home?keyword=…&location=…
     """
 
     source_name = "kalibrr"
 
     def scrape(self) -> list[Job]:
+        # Kalibrr is Indonesia-focused; skip if no Indonesian locations configured
+        if not self._has_indonesian_locations():
+            self.log("No Indonesian locations in config — skipping Kalibrr.")
+            return []
+
+        self.log("Starting Kalibrr scrape …")
+        jobs = self._scrape_via_http()
+        if jobs:
+            self.log(
+                f"HTTP/SSR path collected {len(jobs)} jobs (no browser)."
+            )
+            return jobs[: self._max_jobs]
+
         if not PLAYWRIGHT_AVAILABLE:
             self.log_error(
                 "Playwright not installed. "
@@ -173,13 +189,7 @@ class KalibrrScraper(BaseScraper):
             )
             return []
 
-        # Kalibrr is Indonesia-focused; skip if no Indonesian locations configured
-        if not self._has_indonesian_locations():
-            self.log("No Indonesian locations in config — skipping Kalibrr.")
-            return []
-
-        self.log("Starting Kalibrr scrape …")
-        jobs: list[Job] = []
+        jobs = []
         seen_ids: set[str] = set()
 
         with sync_playwright() as pw:
@@ -227,6 +237,41 @@ class KalibrrScraper(BaseScraper):
             browser.close()
 
         self.log(f"✅  Total jobs collected: {len(jobs)}")
+        return jobs
+
+    def _scrape_via_http(self, max_pages: int = 3) -> list[Job]:
+        """Paginated GET + Next.js ``jobs`` array from HTML."""
+        jobs: list[Job] = []
+        seen_ids: set[str] = set()
+        for title in self.titles:
+            if len(jobs) >= self._max_jobs:
+                break
+            for location in self._get_indonesian_locations():
+                if len(jobs) >= self._max_jobs:
+                    break
+                page_num = 1
+                while page_num <= max_pages and len(jobs) < self._max_jobs:
+                    url = self._build_search_url(title, location, page_num)
+                    self.log(f"[HTTP] Kalibrr page {page_num} …")
+                    html = fetch_html(url)
+                    self._delay()
+                    if not html:
+                        break
+                    records = kalibrr_jobs_from_html(html)
+                    if not records:
+                        break
+                    added = 0
+                    for rec in records:
+                        if len(jobs) >= self._max_jobs:
+                            break
+                        job = self._job_from_kalibrr_next_record(rec)
+                        if job and job.id not in seen_ids:
+                            seen_ids.add(job.id)
+                            jobs.append(job)
+                            added += 1
+                    if added == 0:
+                        break
+                    page_num += 1
         return jobs
 
     # ─── Search page ──────────────────────────────────────────────────────────

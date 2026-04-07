@@ -5,6 +5,8 @@ import time
 from typing import Optional
 from urllib.parse import quote_plus
 
+from apis.http_fetch import fetch_html
+from apis.indeed_rss import IndeedRssItem, build_indeed_rss_url, parse_indeed_rss
 from core.date_parser import parse_posted_date
 from core.deduplicator import make_job_id
 from core.models import Job, LocationType
@@ -83,26 +85,29 @@ _SEL = {
 class IndeedScraper(BaseScraper):
     """
     Scrapes job listings from Indeed Malaysia (malaysia.indeed.com)
-    and Indeed Indonesia (id.indeed.com) using Playwright.
+    and Indeed Indonesia (id.indeed.com).
 
-    Strategy:
-        1. Navigate to the Indeed job search results page for each title × country.
-        2. Extract job cards from the results list.
-        3. For each card, click it to load the side-panel detail and capture
-           the full job description.
-        4. Fall back to navigating directly to the job detail URL if the
-           side panel is not available.
+    Primary method: official-style search **RSS** feeds (``/rss?q=…&l=…``) via
+    HTTP — no browser and usually no CAPTCHA for modest volume.
 
-    Note on Indeed bot detection:
-        Indeed is moderately aggressive about blocking scrapers.  This scraper
-        uses randomised delays, a realistic user-agent, and avoids loading
-        images/media to stay under the radar.  If you encounter CAPTCHAs,
-        increase the delay values in config.yaml.
+    Fallback: Playwright on the HTML job search UI when RSS is empty or blocked.
+
+    Note on Indeed bot detection (Playwright path):
+        Indeed is moderately aggressive about blocking scrapers.  If you encounter
+        CAPTCHAs, increase ``delay_between_requests`` in config.yaml.
     """
 
     source_name = "indeed"
 
     def scrape(self) -> list[Job]:
+        self.log("Starting Indeed scrape …")
+        jobs = self._scrape_via_rss()
+        if jobs:
+            self.log(
+                f"RSS/HTTP path collected {len(jobs)} unique jobs (no browser)."
+            )
+            return jobs[: self._max_jobs]
+
         if not PLAYWRIGHT_AVAILABLE:
             self.log_error(
                 "Playwright not installed — "
@@ -110,8 +115,7 @@ class IndeedScraper(BaseScraper):
             )
             return []
 
-        self.log("Starting Indeed scrape …")
-        jobs: list[Job] = []
+        jobs = []
         seen_ids: set[str] = set()
 
         with sync_playwright() as pw:
@@ -168,6 +172,78 @@ class IndeedScraper(BaseScraper):
 
         self.log(f"Done — {len(jobs)} unique Indeed jobs collected.")
         return jobs
+
+    def _scrape_via_rss(self) -> list[Job]:
+        jobs: list[Job] = []
+        seen_ids: set[str] = set()
+        for title in self.titles:
+            if len(jobs) >= self._max_jobs:
+                break
+            for country_name, cfg in _COUNTRY_CONFIG.items():
+                if not self._should_scrape_country(country_name):
+                    continue
+                if len(jobs) >= self._max_jobs:
+                    break
+                rss_url = build_indeed_rss_url(
+                    cfg["domain"], title, cfg["location_default"]
+                )
+                self.log(f"[RSS] Indeed {country_name}: {rss_url[:90]}…")
+                xml_text = fetch_html(rss_url)
+                self._delay()
+                head = (xml_text or "")[:800].lower()
+                if "<rss" not in head and "rdf:rdf" not in head:
+                    continue
+                for item in parse_indeed_rss(xml_text):
+                    if len(jobs) >= self._max_jobs:
+                        break
+                    job = self._job_from_rss_item(item, country_name)
+                    if job and job.id not in seen_ids:
+                        seen_ids.add(job.id)
+                        jobs.append(job)
+        return jobs
+
+    def _job_from_rss_item(
+        self, item: IndeedRssItem, country_name: str
+    ) -> Optional[Job]:
+        raw_title = (item.title or "").strip()
+        if not raw_title:
+            return None
+        if " - " in raw_title:
+            title, company = raw_title.rsplit(" - ", 1)
+            title, company = title.strip(), company.strip()
+        else:
+            title, company = raw_title, "Unknown Company"
+        if not title:
+            return None
+
+        desc = re.sub(r"<[^>]+>", " ", item.description or "")
+        desc = re.sub(r"\s+", " ", desc).strip()[:5000]
+
+        pd = (item.pub_date or "").strip()
+        posted_at = parse_posted_date(item.pub_date) if pd else None
+
+        loc_type = detect_location_type(
+            title,
+            f"{desc}\n{country_name}",
+            country_name,
+        )
+
+        link = (item.link or "").strip()
+        job_id = make_job_id(title, company, link or title)
+        cfg = _COUNTRY_CONFIG.get(country_name, _COUNTRY_CONFIG["Malaysia"])
+
+        return Job(
+            id=job_id,
+            title=title,
+            company=company or "Unknown Company",
+            location=country_name,
+            location_type=loc_type,
+            source=self.source_name,
+            url=link or f"https://{cfg['domain']}",
+            description=desc or None,
+            posted_at=posted_at,
+            easy_apply=False,
+        )
 
     # ─── Search page ─────────────────────────────────────────────────────────
 

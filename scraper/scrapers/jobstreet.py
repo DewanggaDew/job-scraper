@@ -5,12 +5,20 @@ import time
 from typing import Optional
 from urllib.parse import quote_plus
 
+from apis.embedded_payloads import seek_jobs_from_html
+from apis.http_fetch import fetch_html
 from core.date_parser import parse_posted_date
 from core.deduplicator import make_job_id
 from core.models import Job, LocationType
-from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 from ranking.job_parser import detect_location_type
 from scrapers.base import BaseScraper
+
+try:
+    from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
 
 # ─── JobStreet domain config ──────────────────────────────────────────────────
 
@@ -44,8 +52,12 @@ _LOCATION_DOMAIN_MAP: dict[str, str] = {
 
 class JobStreetScraper(BaseScraper):
     """
-    Scrapes job listings from JobStreet Malaysia (jobstreet.com.my)
-    and JobStreet Indonesia (jobstreet.co.id) using Playwright.
+    Scrapes job listings from JobStreet Malaysia and Indonesia (SEEK-hosted).
+
+    Primary method: HTTP GET of search URLs and parse ``window.SEEK_REDUX_DATA``
+    from the HTML (first page, and page 2 when useful).
+
+    Fallback: Playwright when SSR payload is missing or blocked.
 
     JobStreet is part of the SEEK group and is the dominant job board
     in Malaysia and Indonesia — high signal-to-noise for local roles.
@@ -54,9 +66,22 @@ class JobStreetScraper(BaseScraper):
     source_name = "jobstreet"
 
     def scrape(self) -> list[Job]:
-        jobs: list[Job] = []
-
         self.log("Starting JobStreet scrape …")
+
+        jobs = self._scrape_via_http()
+        if jobs:
+            self.log(
+                f"HTTP/SSR path collected {len(jobs)} unique jobs (no browser)."
+            )
+            return jobs[: self._max_jobs]
+
+        if not PLAYWRIGHT_AVAILABLE:
+            self.log_error(
+                "Playwright not installed — pip install playwright && playwright install chromium"
+            )
+            return []
+
+        jobs = []
 
         with sync_playwright() as pw:
             browser: Browser = pw.chromium.launch(
@@ -119,11 +144,50 @@ class JobStreetScraper(BaseScraper):
         self.log(f"Done. Total unique jobs scraped: {len(jobs)}")
         return jobs
 
+    def _scrape_via_http(self) -> list[Job]:
+        """Collect jobs from SEEK_REDUX_DATA embedded in search HTML."""
+        jobs: list[Job] = []
+        seen_ids: set[str] = set()
+
+        for title in self.titles:
+            for location in self.all_locations:
+                domain_key = self._resolve_domain(location)
+                if not domain_key:
+                    continue
+                domain = _DOMAINS[domain_key]
+
+                for page_url in (
+                    self._build_search_url(domain, title, location),
+                    self._build_search_url(domain, title, location) + "&page=2",
+                ):
+                    if len(jobs) >= self._max_jobs:
+                        break
+                    self.log(f"[HTTP] GET …{page_url[-60:]}")
+                    html = fetch_html(page_url)
+                    self._delay()
+                    if not html:
+                        continue
+                    items = seek_jobs_from_html(html)
+                    for item in items:
+                        if len(jobs) >= self._max_jobs:
+                            break
+                        job = self._job_from_seek_redux_item(item, domain)
+                        if job and job.id not in seen_ids:
+                            seen_ids.add(job.id)
+                            jobs.append(job)
+                    if not items:
+                        break
+
+            if len(jobs) >= self._max_jobs:
+                break
+
+        return jobs
+
     # ─── Search page scraper ──────────────────────────────────────────────────
 
     def _scrape_search(
         self,
-        page: Page,
+        page: "Page",
         title: str,
         location: str,
         domain: str,

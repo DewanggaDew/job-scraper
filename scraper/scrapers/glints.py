@@ -7,6 +7,8 @@ from datetime import datetime
 from typing import Any, Optional
 from urllib.parse import urlencode
 
+from apis.embedded_payloads import glints_jobs_from_html
+from apis.http_fetch import fetch_html
 from core.date_parser import parse_posted_date
 from core.deduplicator import make_job_id
 from core.models import Job, LocationType
@@ -76,9 +78,10 @@ class GlintsScraper(BaseScraper):
     """
     Scrapes job listings from Glints (glints.com/my and glints.com/id).
 
-    Uses Playwright in headless mode to render the React SPA, then extracts
-    job cards from the explore/search page.  For each card it visits the
-    detail page to capture the full job description.
+    Primary method: HTTP GET of the explore URL and parse ``#__NEXT_DATA__``
+    (same JSON as SSR) — no browser, works when the first page is in the HTML.
+
+    Fallback: Playwright renders the SPA, scrolls, and parses cards / links.
 
     Covers:
         • Malaysia  (glints.com/my) — for Selangor / KL listings
@@ -88,13 +91,20 @@ class GlintsScraper(BaseScraper):
     source_name = "glints"
 
     def scrape(self) -> list[Job]:
+        jobs = self._scrape_via_http()
+        if jobs:
+            self.log(
+                f"HTTP/SSR path collected {len(jobs)} jobs (no browser)."
+            )
+            return jobs[: self._max_jobs]
+
         if not PLAYWRIGHT_AVAILABLE:
             self.log_error(
                 "Playwright not installed — pip install playwright && playwright install chromium"
             )
             return []
 
-        jobs: list[Job] = []
+        jobs = []
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch(**self._get_playwright_launch_options())
@@ -132,6 +142,38 @@ class GlintsScraper(BaseScraper):
             browser.close()
 
         self.log(f"✅  Total jobs collected: {len(jobs)}")
+        return jobs
+
+    def _scrape_via_http(self) -> list[Job]:
+        """Fetch explore pages with httpx; parse embedded Next.js job list."""
+        jobs: list[Job] = []
+        for title in self.titles:
+            for country_name, country_cfg in _COUNTRY_CONFIG.items():
+                if not self._should_scrape_country(country_name):
+                    continue
+                url = self._build_search_url(title, country_cfg)
+                self.log(f"[HTTP] GET {url[:80]}…")
+                html = fetch_html(url)
+                self._delay()
+                if not html:
+                    continue
+                rows = glints_jobs_from_html(html)
+                domain = country_cfg["domain"]
+                for row in rows:
+                    if len(jobs) >= self._max_jobs:
+                        break
+                    try:
+                        job = _next_data_row_to_job(
+                            row, domain, self.source_name, title
+                        )
+                        if job:
+                            jobs.append(job)
+                    except Exception as exc:
+                        self.log_error("Glints HTTP row error", exc)
+                if len(jobs) >= self._max_jobs:
+                    break
+            if len(jobs) >= self._max_jobs:
+                break
         return jobs
 
     # ─── Search page ─────────────────────────────────────────────────────────
