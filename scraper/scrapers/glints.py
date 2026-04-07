@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 import time
-from typing import Optional
+from datetime import datetime
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 from core.date_parser import parse_posted_date
@@ -152,6 +154,18 @@ class GlintsScraper(BaseScraper):
             except Exception:
                 pass
             page.wait_for_timeout(2_500)
+
+            # Next.js embeds the first page of results in #__NEXT_DATA__ (SSR). The
+            # visible list can stay on spinners while this JSON is already present;
+            # prefer it so we do not return 0 jobs when the DOM never matches our
+            # card selectors.
+            next_jobs = self._jobs_from_next_data(page, country_cfg, title)
+            if next_jobs:
+                self.log(
+                    f"  Found {len(next_jobs)} jobs from __NEXT_DATA__ for '{title}'"
+                )
+                return next_jobs[: self._max_jobs]
+
             self._wait_for_job_cards(page, timeout=22_000)
         except Exception as exc:
             self.log_error(f"Could not load search page: {url}", exc)
@@ -182,6 +196,71 @@ class GlintsScraper(BaseScraper):
                 self.log_error("Card parse error", exc)
 
         return jobs
+
+    def _jobs_from_next_data(
+        self,
+        page: "Page",
+        country_cfg: dict,
+        search_title_hint: str,
+    ) -> list[Job]:
+        """
+        Parse ``props.pageProps.initialJobs.jobsInPage`` from the embedded
+        ``#__NEXT_DATA__`` script (Next.js SSR). Avoids relying on React having
+        painted job cards.
+        """
+        raw = self._raw_next_data_job_dicts(page)
+        if not raw:
+            return []
+
+        jobs: list[Job] = []
+        domain = country_cfg["domain"]
+        for row in raw:
+            if len(jobs) >= self._max_jobs:
+                break
+            try:
+                job = _next_data_row_to_job(row, domain, self.source_name, search_title_hint)
+                if job:
+                    jobs.append(job)
+            except Exception as exc:
+                self.log_error("Glints __NEXT_DATA__ row error", exc)
+        return jobs
+
+    def _raw_next_data_job_dicts(self, page: "Page") -> list[dict[str, Any]]:
+        try:
+            script_text = page.evaluate(
+                """() => {
+                    const el = document.getElementById('__NEXT_DATA__');
+                    return el && el.textContent ? el.textContent : '';
+                }"""
+            )
+        except Exception:
+            return []
+
+        if not script_text or not isinstance(script_text, str):
+            return []
+
+        try:
+            data = json.loads(script_text)
+        except json.JSONDecodeError:
+            return []
+
+        initial = (
+            data.get("props", {})
+            .get("pageProps", {})
+            .get("initialJobs")
+        )
+        if not isinstance(initial, dict):
+            return []
+
+        jobs_in_page = initial.get("jobsInPage")
+        if not isinstance(jobs_in_page, list):
+            return []
+
+        out: list[dict[str, Any]] = []
+        for item in jobs_in_page:
+            if isinstance(item, dict) and item.get("id") and item.get("title"):
+                out.append(item)
+        return out
 
     # ─── Card parser ─────────────────────────────────────────────────────────
 
@@ -331,10 +410,15 @@ class GlintsScraper(BaseScraper):
     # ─── URL helpers ─────────────────────────────────────────────────────────
 
     def _build_search_url(self, title: str, country_cfg: dict) -> str:
-        params = {
-            "keyword": title,
+        # Match explore SSR query so initialJobs is populated (see canonical
+        # ``?country=…&locationName=All+Cities%2FProvinces`` on production).
+        params: dict[str, str] = {
             "country": country_cfg["country_code"],
+            "locationName": "All Cities/Provinces",
         }
+        kw = title.strip()
+        if kw:
+            params["keyword"] = kw
         return f"{country_cfg['base_url']}?{urlencode(params)}"
 
     def _normalise_url(self, href: str, domain: str) -> str:
@@ -496,3 +580,117 @@ def _parse_location_type(raw: str) -> Optional[LocationType]:
     if any(w in text for w in ("on-site", "onsite", "office", "on site")):
         return LocationType.ON_SITE
     return None
+
+
+def _glints_iso_posted_at(
+    created_at: Optional[str], updated_at: Optional[str]
+) -> Optional[datetime]:
+    """Prefer createdAt; fall back to updatedAt. Normalise trailing Z for fromisoformat."""
+    raw = (created_at or updated_at or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    return parse_posted_date(raw)
+
+
+def _format_glints_api_location(loc: Any) -> str:
+    """Build a single location string from hierarchical location + legacy city fields."""
+    if not isinstance(loc, dict):
+        return ""
+
+    name = (loc.get("name") or loc.get("formattedName") or "").strip()
+    parts: list[str] = []
+    parents = loc.get("parents")
+    if isinstance(parents, list):
+        for p in parents:
+            if not isinstance(p, dict):
+                continue
+            fn = (p.get("formattedName") or p.get("name") or "").strip()
+            if fn and fn not in parts:
+                parts.append(fn)
+    if name and name not in parts:
+        parts.insert(0, name)
+    if parts:
+        return ", ".join(parts)
+
+    return name
+
+
+def _snippet_from_glints_api_row(row: dict[str, Any]) -> Optional[str]:
+    """Lightweight text from category + skills when we skip the detail page."""
+    lines: list[str] = []
+    cat = row.get("hierarchicalJobCategory")
+    if isinstance(cat, dict):
+        cn = (cat.get("name") or "").strip()
+        if cn:
+            lines.append(f"Category: {cn}")
+
+    skill_names: list[str] = []
+    skills = row.get("skills")
+    if isinstance(skills, list):
+        for s in skills[:20]:
+            if not isinstance(s, dict):
+                continue
+            sk = s.get("skill")
+            if isinstance(sk, dict):
+                nm = (sk.get("name") or "").strip()
+                if nm:
+                    skill_names.append(nm)
+    if skill_names:
+        lines.append("Skills: " + ", ".join(skill_names))
+
+    return "\n".join(lines) if lines else None
+
+
+def _next_data_row_to_job(
+    row: dict[str, Any],
+    domain: str,
+    source_name: str,
+    search_title_hint: str,
+) -> Optional[Job]:
+    job_id = str(row.get("id") or "").strip()
+    title = (row.get("title") or "").strip()
+    if not job_id or not title:
+        return None
+
+    company_block = row.get("company")
+    company = "Unknown Company"
+    if isinstance(company_block, dict):
+        company = (company_block.get("name") or "").strip() or company
+
+    loc_text = _format_glints_api_location(row.get("location"))
+    if not loc_text:
+        city = row.get("city")
+        if isinstance(city, dict):
+            loc_text = (city.get("name") or "").strip()
+    if not loc_text:
+        csd = row.get("citySubDivision")
+        if isinstance(csd, dict):
+            loc_text = (csd.get("name") or "").strip()
+
+    arrangement = row.get("workArrangementOption")
+    raw_arr = arrangement if isinstance(arrangement, str) else ""
+    loc_type = _parse_location_type(raw_arr) or detect_location_type(
+        title, "", loc_text
+    )
+
+    url = f"https://{domain}/opportunities/jobs/{job_id}"
+    description = _snippet_from_glints_api_row(row)
+    posted_at = _glints_iso_posted_at(
+        row.get("createdAt") if isinstance(row.get("createdAt"), str) else None,
+        row.get("updatedAt") if isinstance(row.get("updatedAt"), str) else None,
+    )
+
+    return Job(
+        id=make_job_id(title, company, loc_text or search_title_hint or url),
+        title=title,
+        company=company,
+        location=loc_text or None,
+        location_type=loc_type,
+        source=source_name,
+        url=url,
+        description=description,
+        posted_at=posted_at,
+        easy_apply=False,
+    )
