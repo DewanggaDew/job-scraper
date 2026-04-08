@@ -5,7 +5,7 @@ import time
 from typing import Optional
 from urllib.parse import quote_plus
 
-from apis.http_fetch import fetch_html
+from apis.http_fetch import fetch_html, fetch_text_retry
 from apis.indeed_rss import IndeedRssItem, build_indeed_rss_url, parse_indeed_rss
 from core.date_parser import parse_posted_date
 from core.deduplicator import make_job_id
@@ -125,11 +125,13 @@ class IndeedScraper(BaseScraper):
 
             # Block heavy assets only. Blocking stylesheets breaks many SPAs
             # (including Indeed) that gate or layout results via CSS.
+            # Do not block images — Indeed often gates or fingerprints via media;
+            # blocking correlated with empty results on some hosts.
             page.route(
                 "**/*",
                 lambda route: (
                     route.abort()
-                    if route.request.resource_type in ("image", "media", "font")
+                    if route.request.resource_type in ("media", "font")
                     else route.continue_()
                 ),
             )
@@ -188,10 +190,22 @@ class IndeedScraper(BaseScraper):
                     cfg["domain"], title, cfg["location_default"]
                 )
                 self.log(f"[RSS] Indeed {country_name}: {rss_url[:90]}…")
-                xml_text = fetch_html(rss_url)
+                xml_text = fetch_text_retry(
+                    rss_url,
+                    extra_headers={
+                        "Accept": (
+                            "application/rss+xml, application/xml, "
+                            "text/xml;q=0.9, */*;q=0.8"
+                        ),
+                    },
+                )
                 self._delay()
-                head = (xml_text or "")[:800].lower()
-                if "<rss" not in head and "rdf:rdf" not in head:
+                head = (xml_text or "")[:2000].lower()
+                if (
+                    "<rss" not in head
+                    and "rdf:rdf" not in head
+                    and "<feed" not in head
+                ):
                     continue
                 for item in parse_indeed_rss(xml_text):
                     if len(jobs) >= self._max_jobs:
@@ -263,11 +277,11 @@ class IndeedScraper(BaseScraper):
             self.log(f"  Page {page_num + 1}: {url}")
 
             try:
-                page.goto(url, wait_until="load", timeout=35_000)
+                page.goto(url, wait_until="domcontentloaded", timeout=45_000)
                 self._dismiss_popups(page)
-                page.wait_for_timeout(1_500)
+                page.wait_for_timeout(2_500)
                 page.evaluate("window.scrollTo(0, 400)")
-                page.wait_for_timeout(800)
+                page.wait_for_timeout(1_200)
             except Exception as exc:
                 self.log_error(f"Navigation failed: {url}", exc)
                 break
@@ -282,7 +296,7 @@ class IndeedScraper(BaseScraper):
 
             # Wait for job cards (layout varies; timeout is non-fatal)
             try:
-                page.wait_for_selector(_SEL["job_cards"], timeout=18_000)
+                page.wait_for_selector(_SEL["job_cards"], timeout=38_000)
             except PWTimeout:
                 self.log(
                     f"  Job-card selector wait timed out on page {page_num + 1} "

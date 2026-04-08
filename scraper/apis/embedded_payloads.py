@@ -55,26 +55,62 @@ def kalibrr_jobs_from_html(html: str) -> list[dict[str, Any]]:
     return [j for j in jobs if isinstance(j, dict)]
 
 
-def seek_jobs_from_html(html: str) -> list[dict[str, Any]]:
-    """
-    ``window.SEEK_REDUX_DATA.results.results.jobs`` from JobStreet / SEEK SSR.
-    """
-    m = re.search(r"window\.SEEK_REDUX_DATA\s*=\s*", html)
-    if not m:
-        return []
-    tail = html[m.end() :].lstrip()
-    decoder = JSONDecoder()
-    try:
-        payload, _ = decoder.raw_decode(tail)
-    except json.JSONDecodeError:
-        return []
+def _seek_jobs_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Resolve job list from SEEK_REDUX-shaped JSON (paths vary by release)."""
     if not isinstance(payload, dict):
         return []
+
     results = payload.get("results")
-    if not isinstance(results, dict):
-        return []
-    inner = results.get("results")
-    if not isinstance(inner, dict):
-        return []
-    jobs = inner.get("jobs")
-    return jobs if isinstance(jobs, list) else []
+    if isinstance(results, dict):
+        inner = results.get("results")
+        if isinstance(inner, dict):
+            jobs = inner.get("jobs")
+            if isinstance(jobs, list):
+                return [j for j in jobs if isinstance(j, dict)]
+        jobs = results.get("jobs")
+        if isinstance(jobs, list):
+            return [j for j in jobs if isinstance(j, dict)]
+
+    for key in ("jobResults", "searchResults", "jobs"):
+        block = payload.get(key)
+        if isinstance(block, dict):
+            jobs = block.get("jobs") or block.get("data")
+            if isinstance(jobs, list):
+                return [j for j in jobs if isinstance(j, dict)]
+        if isinstance(block, list):
+            return [j for j in block if isinstance(j, dict)]
+
+    return []
+
+
+def seek_jobs_from_html(html: str) -> list[dict[str, Any]]:
+    """
+    ``SEEK_REDUX_DATA`` from JobStreet / SEEK SSR (inline assignment in HTML).
+    """
+    for pattern in (
+        r"window\.SEEK_REDUX_DATA\s*=\s*",
+        r"SEEK_REDUX_DATA\s*=\s*",
+        r"self\.SEEK_REDUX_DATA\s*=\s*",
+    ):
+        m = re.search(pattern, html)
+        if not m:
+            continue
+        tail = html[m.end() :].lstrip()
+        decoder = JSONDecoder()
+        try:
+            payload, _ = decoder.raw_decode(tail)
+        except json.JSONDecodeError:
+            continue
+        jobs = _seek_jobs_from_payload(payload if isinstance(payload, dict) else {})
+        if jobs:
+            return [
+                j
+                for j in jobs
+                if isinstance(j, dict)
+                and (
+                    (str(j.get("title") or "")).strip()
+                    or j.get("id")
+                    or j.get("jobId")
+                )
+            ]
+    return []

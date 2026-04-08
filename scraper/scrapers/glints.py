@@ -189,10 +189,27 @@ class GlintsScraper(BaseScraper):
         url = self._build_search_url(title, country_cfg)
 
         try:
-            page.goto(url, wait_until="load", timeout=45_000)
+            page.goto(url, wait_until="domcontentloaded", timeout=45_000)
             self._dismiss_popups(page)
+
             try:
-                page.wait_for_load_state("networkidle", timeout=20_000)
+                page.wait_for_function(
+                    """() => {
+                        const el = document.getElementById('__NEXT_DATA__');
+                        if (!el || !el.textContent) return false;
+                        try {
+                            const d = JSON.parse(el.textContent);
+                            const jobs = d?.props?.pageProps?.initialJobs?.jobsInPage;
+                            return Array.isArray(jobs) && jobs.length > 0;
+                        } catch (e) { return false; }
+                    }""",
+                    timeout=55_000,
+                )
+            except Exception:
+                pass
+
+            try:
+                page.wait_for_load_state("networkidle", timeout=25_000)
             except Exception:
                 pass
             page.wait_for_timeout(2_500)

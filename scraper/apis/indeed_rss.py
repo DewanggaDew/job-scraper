@@ -35,7 +35,7 @@ def parse_indeed_rss(xml_text: str) -> list[IndeedRssItem]:
     except ET.ParseError:
         return []
 
-    # RSS 2.0: channel/item; tolerate default namespace
+    # RSS 2.0 item; Atom entry — tolerate default namespaces
     items: list[IndeedRssItem] = []
     for el in root.iter():
         if el.tag.endswith("item") or el.tag == "item":
@@ -51,7 +51,31 @@ def parse_indeed_rss(xml_text: str) -> list[IndeedRssItem]:
                     pub_date=_child_text(el, "pubDate"),
                 )
             )
+        elif el.tag.endswith("entry"):
+            title = _child_text(el, "title")
+            link = _atom_link_href(el)
+            if not title or not link:
+                continue
+            items.append(
+                IndeedRssItem(
+                    title=title.strip(),
+                    link=link.strip(),
+                    description=_child_text(el, "summary")
+                    or _child_text(el, "content"),
+                    pub_date=_child_text(el, "published")
+                    or _child_text(el, "updated"),
+                )
+            )
     return items
+
+
+def _atom_link_href(entry: ET.Element) -> str:
+    for child in entry:
+        if child.tag.endswith("link") or child.tag == "link":
+            href = (child.get("href") or "").strip()
+            if href:
+                return href
+    return ""
 
 
 def _child_text(parent: ET.Element, tag_suffix: str) -> str:

@@ -10,12 +10,13 @@ from apis.embedded_payloads import (
     kalibrr_jobs_from_html,
     seek_jobs_from_html,
 )
-from apis.http_fetch import fetch_html
+from apis.http_fetch import fetch_html, fetch_text_retry
 from apis.indeed_rss import build_indeed_rss_url, parse_indeed_rss
 
 __all__ = [
     "build_indeed_rss_url",
     "fetch_html",
+    "fetch_text_retry",
     "glints_jobs_from_html",
     "kalibrr_jobs_from_html",
     "parse_indeed_rss",

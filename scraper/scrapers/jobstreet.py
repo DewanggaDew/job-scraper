@@ -197,17 +197,33 @@ class JobStreetScraper(BaseScraper):
         self.log(f"Navigating → {url}")
 
         try:
-            page.goto(url, wait_until="load", timeout=45_000)
+            page.goto(url, wait_until="domcontentloaded", timeout=45_000)
         except Exception as exc:
             self.log_error(f"Navigation failed for {url}", exc)
             return []
 
-        # Listings are client-rendered; give the SPA time after load.
+        # Listings hydrate from SEEK_REDUX_DATA; wait for jobs before DOM selectors.
         try:
-            page.wait_for_load_state("networkidle", timeout=15_000)
+            page.wait_for_function(
+                """() => {
+                    const d = window.SEEK_REDUX_DATA;
+                    if (!d || !d.results) return false;
+                    const inner = d.results.results;
+                    if (inner && Array.isArray(inner.jobs) && inner.jobs.length > 0)
+                        return true;
+                    const j = d.results.jobs;
+                    return Array.isArray(j) && j.length > 0;
+                }""",
+                timeout=55_000,
+            )
         except Exception:
             pass
-        page.wait_for_timeout(2_500)
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=20_000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2_000)
 
         # Primary path: SEEK embeds the first results page in window.SEEK_REDUX_DATA
         # (inline script). This is reliable when the visible DOM uses hashed classes.
@@ -218,10 +234,10 @@ class JobStreetScraper(BaseScraper):
 
         # Fallback: wait for classic job-card selectors
         try:
-            page.wait_for_selector(_JOB_LIST_SELECTORS, timeout=20_000)
+            page.wait_for_selector(_JOB_LIST_SELECTORS, timeout=35_000)
         except Exception:
             self.log(
-                f"No job cards found on {url} (page may be empty or changed layout)"
+                f"No job cards found on {url} (page may be empty, blocked, or layout changed)"
             )
             return []
 
@@ -259,7 +275,7 @@ class JobStreetScraper(BaseScraper):
 
     def _extract_jobs_from_seek_redux(
         self,
-        page: Page,
+        page: "Page",
         domain: str,
     ) -> list[Job]:
         """
@@ -270,9 +286,11 @@ class JobStreetScraper(BaseScraper):
             raw = page.evaluate(
                 """() => {
                     const d = window.SEEK_REDUX_DATA;
-                    if (!d || !d.results || !d.results.results) return [];
-                    const jobs = d.results.results.jobs;
-                    return Array.isArray(jobs) ? jobs : [];
+                    if (!d || !d.results) return [];
+                    const inner = d.results.results;
+                    if (inner && Array.isArray(inner.jobs)) return inner.jobs;
+                    if (Array.isArray(d.results.jobs)) return d.results.jobs;
+                    return [];
                 }"""
             )
         except Exception:
@@ -594,6 +612,12 @@ class JobStreetScraper(BaseScraper):
         where = re.sub(
             r",?\s*(malaysia|indonesia)$", "", location, flags=re.IGNORECASE
         ).strip()
+        # "Malaysia" / "Indonesia" alone become '' after the strip — SEEK needs a region.
+        if not where:
+            if "id.jobstreet" in domain:
+                where = "Indonesia"
+            else:
+                where = "Malaysia"
         return (
             f"https://{domain}/jobs"
             f"?keywords={quote_plus(title)}"
