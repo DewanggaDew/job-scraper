@@ -30,7 +30,9 @@ Environment variables required (set as GitHub Secrets):
 
 import os
 import sys
+import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import yaml
@@ -40,7 +42,7 @@ from core.database import (
     log_scrape_run,
     purge_stale_jobs,
     upsert_cv_profile,
-    upsert_job,
+    upsert_jobs_batch,
 )
 from core.deduplicator import is_duplicate
 from core.models import Job, ScrapeSummary
@@ -177,27 +179,43 @@ def run() -> None:
         traceback.print_exc()
         sys.exit(1)
 
-    # ── Step 4: Run all scrapers ───────────────────────────────────────────────
-    print("\n🔍  Running scrapers …")
+    # ── Step 4: Run all scrapers (in parallel) ────────────────────────────────
+    print("\n🔍  Running scrapers (parallel) …")
     scrapers = build_scrapers(config)
     all_scraped_jobs: list[Job] = []
+    scrape_t0 = time.monotonic()
 
-    for scraper in scrapers:
+    SCRAPER_TIMEOUT_S = 20 * 60  # 20 minutes per scraper
+
+    def _run_one_scraper(scraper):
         source = scraper.source_name
         print(f"\n  ── {source.capitalize()} {'─' * (50 - len(source))}")
-        try:
-            jobs = scraper.scrape()
-            print(f"  ✅  {source.capitalize()}: {len(jobs)} jobs scraped")
-            all_scraped_jobs.extend(jobs)
-            summary.total_scraped += len(jobs)
-        except Exception as exc:
-            msg = f"Scraper '{source}' failed: {exc}"
-            print(f"  ❌  {msg}")
-            summary.add_error(source, str(exc))
-            traceback.print_exc()
-            # Never let one scraper failure abort the whole run
+        jobs = scraper.scrape()
+        print(f"  ✅  {source.capitalize()}: {len(jobs)} jobs scraped")
+        return source, jobs
 
+    with ThreadPoolExecutor(max_workers=len(scrapers)) as pool:
+        futures = {pool.submit(_run_one_scraper, s): s for s in scrapers}
+        for future in as_completed(futures):
+            scraper = futures[future]
+            source = scraper.source_name
+            try:
+                source, jobs = future.result(timeout=SCRAPER_TIMEOUT_S)
+                all_scraped_jobs.extend(jobs)
+                summary.total_scraped += len(jobs)
+            except TimeoutError:
+                msg = f"Scraper '{source}' timed out after {SCRAPER_TIMEOUT_S}s"
+                print(f"  ❌  {msg}")
+                summary.add_error(source, msg)
+            except Exception as exc:
+                msg = f"Scraper '{source}' failed: {exc}"
+                print(f"  ❌  {msg}")
+                summary.add_error(source, str(exc))
+                traceback.print_exc()
+
+    scrape_elapsed = time.monotonic() - scrape_t0
     print(f"\n  Total scraped (before filtering): {len(all_scraped_jobs)}")
+    print(f"  ⏱  Scraping took {scrape_elapsed:.1f}s")
 
     # ── Step 4b: Filter irrelevant titles ─────────────────────────────────────
     title_filter_cfg = config.get("title_filter", {})
@@ -244,15 +262,17 @@ def run() -> None:
         return
 
     # ── Step 6: Score new jobs ────────────────────────────────────────────────
-    print(f"\n🏆  Scoring {len(new_jobs)} new jobs …")
+    score_t0 = time.monotonic()
+    print(f"\n🏆  Scoring {len(new_jobs)} new jobs (batched embeddings) …")
     try:
         scored_jobs = score_jobs_bulk(new_jobs, swe_profile, pm_profile)
     except Exception as exc:
         print(f"❌  Scoring pipeline error: {exc}")
         summary.add_error("scorer", str(exc))
         traceback.print_exc()
-        # Fall through — save jobs with no scores rather than losing them
         scored_jobs = new_jobs
+
+    score_elapsed = time.monotonic() - score_t0
 
     # Tally by label
     for job in scored_jobs:
@@ -271,20 +291,17 @@ def run() -> None:
         f"  🟡 Decent: {summary.decent_matches}"
         f"  🔴 Low:    {summary.low_matches}"
     )
+    print(f"  ⏱  Scoring took {score_elapsed:.1f}s")
 
-    # ── Step 7: Save to Supabase ──────────────────────────────────────────────
-    print(f"\n💾  Saving {len(scored_jobs)} jobs to Supabase …")
-    save_errors = 0
-    for job in scored_jobs:
-        try:
-            upsert_job(job)
-        except Exception as exc:
-            save_errors += 1
-            if save_errors <= 5:  # don't spam logs for bulk failures
-                print(f"  ⚠️  Save error for '{job.title}' @ '{job.company}': {exc}")
+    # ── Step 7: Save to Supabase (batched) ──────────────────────────────────
+    save_t0 = time.monotonic()
+    print(f"\n💾  Saving {len(scored_jobs)} jobs to Supabase (batched) …")
+    save_errors = upsert_jobs_batch(scored_jobs, batch_size=50)
 
     saved_count = len(scored_jobs) - save_errors
+    save_elapsed = time.monotonic() - save_t0
     print(f"  ✅  {saved_count} saved  |  {save_errors} failed")
+    print(f"  ⏱  DB save took {save_elapsed:.1f}s")
 
     if save_errors:
         summary.add_error(

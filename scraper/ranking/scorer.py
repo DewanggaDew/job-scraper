@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
 import yaml
 from core.models import CVProfile, Job, JobScore, MatchLabel
-from ranking.embeddings import compute_skills_similarity, title_similarity
+from ranking.embeddings import (
+    EmbeddingCache,
+    compute_skills_similarity,
+    title_similarity,
+)
 from ranking.job_parser import (
     detect_location_type,
     extract_job_skills,
@@ -14,14 +19,19 @@ from ranking.job_parser import (
     extract_years_required,
 )
 
-# ─── Config loader ────────────────────────────────────────────────────────────
+# ─── Config loader (cached) ──────────────────────────────────────────────────
+
+_scoring_config: Optional[dict] = None
 
 
 def _load_scoring_config() -> dict:
-    scraper_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    config_path = os.path.join(scraper_root, "config.yaml")
-    with open(config_path, "r", encoding="utf-8") as fh:
-        return yaml.safe_load(fh).get("scoring", {})
+    global _scoring_config
+    if _scoring_config is None:
+        scraper_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(scraper_root, "config.yaml")
+        with open(config_path, "r", encoding="utf-8") as fh:
+            _scoring_config = yaml.safe_load(fh).get("scoring", {})
+    return _scoring_config
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
@@ -31,30 +41,13 @@ def score_job(
     job: Job,
     swe_profile: CVProfile,
     pm_profile: CVProfile,
+    cache: Optional[EmbeddingCache] = None,
 ) -> JobScore:
     """
     Score a job against both CV profiles and return the best result.
 
-    The scorer:
-      1. Runs all four sub-scorers against BOTH CVs.
-      2. Picks the CV that yields the higher overall score.
-      3. Assigns a MatchLabel (Strong / Decent / Low) based on thresholds.
-      4. Sets `suggested_cv` on the returned JobScore.
-
-    Weights (from config.yaml):
-      skills    40%  – semantic similarity of CV skills vs. job-required skills
-      seniority 25%  – alignment of candidate level with the role's expectations
-      recency   20%  – how recently the job was posted
-      title     15%  – how closely the job title matches preferred titles
-
-    Args:
-        job:         The scraped Job object (must have .title and .description).
-        swe_profile: Parsed SWE / developer CV profile.
-        pm_profile:  Parsed Product Manager CV profile.
-
-    Returns:
-        A JobScore with all sub-scores, an overall score (0–100), a label, and
-        the id of the suggested CV ('swe' or 'pm').
+    When *cache* is provided, embedding lookups are resolved from pre-computed
+    vectors instead of calling model.encode() per job.
     """
     config = _load_scoring_config()
     weights: dict[str, float] = config.get(
@@ -65,10 +58,9 @@ def score_job(
         "thresholds", {"strong": 75.0, "decent": 50.0}
     )
 
-    swe_score = _score_against_profile(job, swe_profile, weights)
-    pm_score = _score_against_profile(job, pm_profile, weights)
+    swe_score = _score_against_profile(job, swe_profile, weights, cache)
+    pm_score = _score_against_profile(job, pm_profile, weights, cache)
 
-    # ── Pick the better-matching CV ───────────────────────────────────────────
     if swe_score.overall >= pm_score.overall:
         best = swe_score
         best.suggested_cv = "swe"
@@ -76,7 +68,6 @@ def score_job(
         best = pm_score
         best.suggested_cv = "pm"
 
-    # ── Assign label ──────────────────────────────────────────────────────────
     if best.overall >= thresholds.get("strong", 75):
         best.label = MatchLabel.STRONG
     elif best.overall >= thresholds.get("decent", 50):
@@ -87,6 +78,39 @@ def score_job(
     return best
 
 
+def _collect_texts_for_batch(
+    jobs: list[Job],
+    profiles: list[CVProfile],
+) -> list[str]:
+    """
+    Gather every text string that will need an embedding during scoring,
+    so we can encode them all in one batch before the scoring loop.
+    """
+    texts: list[str] = []
+
+    for p in profiles:
+        if p.skills:
+            texts.append(", ".join(p.skills))
+        if p.raw_text:
+            texts.append(p.raw_text[:512])
+        texts.extend(p.titles)
+
+    for job in jobs:
+        title = job.title or ""
+        description = job.description or ""
+
+        if title:
+            texts.append(title)
+        if description:
+            texts.append(description[:512])
+
+        job_skills = extract_job_skills(description)
+        if job_skills:
+            texts.append(", ".join(job_skills))
+
+    return texts
+
+
 def score_jobs_bulk(
     jobs: list[Job],
     swe_profile: CVProfile,
@@ -95,30 +119,27 @@ def score_jobs_bulk(
     """
     Score a list of jobs in place, attaching a JobScore to each.
 
-    Logs progress to stdout so GitHub Actions shows live output during long
-    scrape runs.
-
-    Args:
-        jobs:        List of Job objects to score.
-        swe_profile: SWE CV profile.
-        pm_profile:  PM CV profile.
-
-    Returns:
-        The same list of Jobs, each with `.score` populated.
+    Pre-computes all embeddings in a single batch encode call, then scores
+    each job using cached vector lookups (no per-job model.encode()).
     """
+    print("  Collecting texts for batch encoding …")
+    all_texts = _collect_texts_for_batch(jobs, [swe_profile, pm_profile])
+    cache = EmbeddingCache()
+    cache.warm(all_texts)
+    print(f"  ✅  Embedding cache warmed: {cache.size} vectors")
+
     total = len(jobs)
     for idx, job in enumerate(jobs, start=1):
         try:
-            job.score = score_job(job, swe_profile, pm_profile)
+            job.score = score_job(job, swe_profile, pm_profile, cache=cache)
             label_symbol = _label_symbol(job.score.label)
             print(
                 f"  [{idx:>3}/{total}] {label_symbol} {job.score.overall:5.1f}  "
                 f"{job.title[:50]:<50}  @ {job.company[:30]}"
             )
         except Exception as exc:
-            # Never let a single scoring failure abort the entire run
             print(f"  [{idx:>3}/{total}] ⚠️  Scoring error for '{job.title}': {exc}")
-            job.score = JobScore()  # zero score fallback
+            job.score = JobScore()
 
     return jobs
 
@@ -130,6 +151,7 @@ def _score_against_profile(
     job: Job,
     profile: CVProfile,
     weights: dict[str, float],
+    cache: Optional[EmbeddingCache] = None,
 ) -> JobScore:
     """
     Compute the four sub-scores and the weighted overall for one CV profile.
@@ -138,19 +160,11 @@ def _score_against_profile(
     title = job.title or ""
     description = job.description or ""
 
-    # ── 1. Skills score ───────────────────────────────────────────────────────
-    skills_score = _skills_score(profile, description, title)
-
-    # ── 2. Seniority score ────────────────────────────────────────────────────
+    skills_score = _skills_score(profile, description, title, cache)
     seniority_score = _seniority_score(profile, title, description)
-
-    # ── 3. Recency score ──────────────────────────────────────────────────────
     recency_score = _recency_score(job.posted_at)
+    title_score = _title_score(title, profile.titles, cache)
 
-    # ── 4. Title score ────────────────────────────────────────────────────────
-    title_score = _title_score(title, profile.titles)
-
-    # ── Weighted overall ──────────────────────────────────────────────────────
     overall = (
         skills_score * weights.get("skills", 0.40)
         + seniority_score * weights.get("seniority", 0.25)
@@ -165,53 +179,53 @@ def _score_against_profile(
         seniority=round(seniority_score, 1),
         recency=round(recency_score, 1),
         title=round(title_score, 1),
-        # label and suggested_cv are set by the caller
     )
 
 
 # ─── Sub-scorers ─────────────────────────────────────────────────────────────
 
 
-def _skills_score(profile: CVProfile, description: str, title: str) -> float:
+def _skills_score(
+    profile: CVProfile,
+    description: str,
+    title: str,
+    cache: Optional[EmbeddingCache] = None,
+) -> float:
     """
     Score how well the candidate's skills match the job's requirements.
 
-    Primary method: semantic cosine similarity between the CV skill list and
-    the skills extracted from the job description.
-
-    Fallback (when the job description is too short or no skills are extracted):
-    keyword overlap count — how many CV skills literally appear in the text.
-
-    The two methods are blended when both are available so that literal matches
-    reinforce semantic matches.
+    When *cache* is provided, uses pre-computed vectors for cosine lookups
+    instead of calling model.encode() per pair.
     """
     job_skills = extract_job_skills(description)
 
-    # ── Semantic similarity ───────────────────────────────────────────────────
     semantic_score: float = 0.0
     if job_skills and profile.skills:
-        raw = compute_skills_similarity(profile.skills, job_skills)
-        semantic_score = raw * 100
+        cv_text = ", ".join(profile.skills)
+        job_text = ", ".join(job_skills)
+        if cache:
+            semantic_score = cache.cosine(cv_text, job_text) * 100
+        else:
+            raw = compute_skills_similarity(profile.skills, job_skills)
+            semantic_score = raw * 100
 
-    # ── Keyword overlap ───────────────────────────────────────────────────────
     overlap_score: float = _keyword_overlap_score(profile.skills, description, title)
 
-    # ── Also compare raw_text / profile context against job description ───────
     context_score: float = 0.0
     if profile.raw_text and description:
-        from ranking.embeddings import compute_similarity  # lazy import avoids circular
+        cv_ctx = profile.raw_text[:512]
+        desc_ctx = description[:512]
+        if cache:
+            context_score = cache.cosine(cv_ctx, desc_ctx) * 100
+        else:
+            from ranking.embeddings import compute_similarity
+            context_score = compute_similarity(cv_ctx, desc_ctx) * 100
 
-        raw_ctx = compute_similarity(profile.raw_text[:512], description[:512])
-        context_score = raw_ctx * 100
-
-    # ── Blend ─────────────────────────────────────────────────────────────────
     if semantic_score > 0 and context_score > 0:
-        # Weighted blend: semantic 50%, keyword overlap 30%, context 20%
         combined = semantic_score * 0.50 + overlap_score * 0.30 + context_score * 0.20
     elif semantic_score > 0:
         combined = semantic_score * 0.70 + overlap_score * 0.30
     else:
-        # No skills extracted from job — fall back to pure overlap + context
         combined = overlap_score * 0.60 + context_score * 0.40
 
     return min(combined, 100.0)
@@ -346,29 +360,29 @@ def _recency_score(posted_at: Optional[datetime]) -> float:
     return 0.0
 
 
-def _title_score(job_title: str, preferred_titles: list[str]) -> float:
+def _title_score(
+    job_title: str,
+    preferred_titles: list[str],
+    cache: Optional[EmbeddingCache] = None,
+) -> float:
     """
     Score how well the job title matches the candidate's preferred titles.
 
-    Two-pass approach:
-      1. Exact / substring match → 100 (fast, no model needed)
-      2. Semantic similarity via sentence-transformers (handles synonyms /
-         paraphrases like "Full-stack Engineer" ≈ "Software Developer")
-
-    The best score from both passes is returned.
+    Three-pass approach:
+      1. Exact / substring match -> 100
+      2. Word-level token overlap -> max 80
+      3. Semantic similarity via embeddings (cached or live)
     """
     if not job_title or not preferred_titles:
         return 0.0
 
     job_lower = job_title.lower()
 
-    # ── Pass 1: exact / substring ─────────────────────────────────────────────
     for preferred in preferred_titles:
         pref_lower = preferred.lower()
         if pref_lower in job_lower or job_lower in pref_lower:
             return 100.0
 
-    # ── Pass 2: word-level token overlap ─────────────────────────────────────
     job_tokens = set(re.sub(r"[^\w\s]", "", job_lower).split())
     best_token_score = 0.0
     for preferred in preferred_titles:
@@ -376,18 +390,15 @@ def _title_score(job_title: str, preferred_titles: list[str]) -> float:
         pref_tokens = set(re.sub(r"[^\w\s]", "", pref_lower).split())
         overlap = len(job_tokens & pref_tokens)
         if overlap > 0:
-            score = overlap / max(len(pref_tokens), 1) * 80  # max 80 for partial
+            score = overlap / max(len(pref_tokens), 1) * 80
             best_token_score = max(best_token_score, score)
 
-    # ── Pass 3: semantic similarity ───────────────────────────────────────────
-    semantic = title_similarity(job_title, preferred_titles) * 100
+    if cache:
+        semantic = cache.best_cosine(job_title, preferred_titles) * 100
+    else:
+        semantic = title_similarity(job_title, preferred_titles) * 100
 
     return min(max(best_token_score, semantic), 100.0)
-
-
-# ─── Utility ─────────────────────────────────────────────────────────────────
-
-import re  # noqa: E402  (placed here to keep top-level imports clean)
 
 
 def _label_symbol(label: MatchLabel) -> str:

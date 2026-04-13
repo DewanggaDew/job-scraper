@@ -1,26 +1,16 @@
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
 # ─── Model config ─────────────────────────────────────────────────────────────
-# all-MiniLM-L6-v2:
-#   • ~80 MB download (cached after first run)
-#   • Fast inference — ideal for GitHub Actions
-#   • Strong semantic understanding of tech / job-description text
-#   • Understands that "React developer" ≈ "Frontend engineer with React experience"
 
 MODEL_NAME = "all-MiniLM-L6-v2"
-
-# Honour a custom cache dir so GitHub Actions can cache the model between runs
-# (set via env var SENTENCE_TRANSFORMERS_HOME pointing to a cached directory)
 _CACHE_DIR: Optional[str] = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
-
-# Module-level singleton — loaded once per process
 _model: Optional[SentenceTransformer] = None
 
 
@@ -28,12 +18,7 @@ _model: Optional[SentenceTransformer] = None
 
 
 def get_model() -> SentenceTransformer:
-    """
-    Return the shared SentenceTransformer model, loading it on first call.
-
-    The model is intentionally kept as a module-level singleton to avoid
-    reloading it for every job scored in a single scrape run.
-    """
+    """Return the shared SentenceTransformer model, loading it on first call."""
     global _model
     if _model is None:
         print(f"📦  Loading embedding model: {MODEL_NAME} …")
@@ -46,59 +31,24 @@ def get_model() -> SentenceTransformer:
 
 
 def embed(texts: List[str]) -> np.ndarray:
-    """
-    Return an (N, D) array of L2-normalised sentence embeddings.
-
-    Args:
-        texts: List of strings to embed.  Empty strings are replaced with
-               a single space so the model always receives valid input.
-
-    Returns:
-        numpy float32 array of shape (len(texts), embedding_dim).
-    """
+    """Return an (N, D) array of L2-normalised sentence embeddings."""
     safe_texts = [t if t and t.strip() else " " for t in texts]
     model = get_model()
     return model.encode(safe_texts, convert_to_numpy=True, normalize_embeddings=True)
 
 
 def compute_similarity(text_a: str, text_b: str) -> float:
-    """
-    Compute semantic cosine similarity between two free-form texts.
-
-    Returns a float in [0.0, 1.0] where 1.0 means identical meaning.
-
-    Examples
-    --------
-    compute_similarity("React developer", "Frontend engineer with React experience")
-    → ~0.82
-
-    compute_similarity("Product Manager", "Software Engineer")
-    → ~0.41
-    """
+    """Compute semantic cosine similarity between two free-form texts."""
     if not text_a or not text_b:
         return 0.0
 
-    embeddings = embed([text_a, text_b])  # shape (2, D)
+    embeddings = embed([text_a, text_b])
     score = float(cosine_similarity([embeddings[0]], [embeddings[1]])[0][0])
-    # Clamp to [0, 1] — cosine can return tiny negatives due to float precision
     return max(0.0, min(1.0, score))
 
 
 def compute_skills_similarity(cv_skills: List[str], job_skills: List[str]) -> float:
-    """
-    Compare a CV's skill set against a job's required skills using embeddings.
-
-    Strategy: encode both lists as a single comma-joined string so the model
-    captures the *combination* of skills rather than scoring each pair
-    independently (which would miss complementary / synonym relationships).
-
-    Args:
-        cv_skills:  Skills extracted from the candidate's CV.
-        job_skills: Skills extracted from the job description.
-
-    Returns:
-        Similarity score in [0.0, 1.0].
-    """
+    """Compare a CV's skill set against a job's required skills using embeddings."""
     if not cv_skills or not job_skills:
         return 0.0
 
@@ -111,47 +61,86 @@ def compute_bulk_similarity(
     reference_text: str,
     candidate_texts: List[str],
 ) -> List[float]:
-    """
-    Efficiently compute cosine similarity between one reference text and many
-    candidate texts in a single batch encoding call.
-
-    Useful for comparing a job description against multiple CV sections at once.
-
-    Args:
-        reference_text:   The anchor text (e.g. joined job skills).
-        candidate_texts:  List of texts to compare against the reference.
-
-    Returns:
-        List of float similarity scores, one per candidate text.
-    """
+    """Compute cosine similarity between one reference text and many candidates."""
     if not reference_text or not candidate_texts:
         return [0.0] * len(candidate_texts)
 
     all_texts = [reference_text] + candidate_texts
-    embeddings = embed(all_texts)  # (1 + N, D)
-    ref_emb = embeddings[0:1]  # (1, D)
-    cand_embs = embeddings[1:]  # (N, D)
+    embeddings = embed(all_texts)
+    ref_emb = embeddings[0:1]
+    cand_embs = embeddings[1:]
 
-    scores = cosine_similarity(ref_emb, cand_embs)[0]  # (N,)
+    scores = cosine_similarity(ref_emb, cand_embs)[0]
     return [max(0.0, min(1.0, float(s))) for s in scores]
 
 
 def title_similarity(job_title: str, preferred_titles: List[str]) -> float:
-    """
-    Return the *best* similarity score between a job title and a list of
-    the candidate's preferred titles.
-
-    Uses bulk embedding for efficiency when many preferred titles are given.
-
-    Args:
-        job_title:        Title of the scraped job posting.
-        preferred_titles: Titles from the CV / config (e.g. "Software Engineer").
-
-    Returns:
-        Best match similarity in [0.0, 1.0].
-    """
+    """Return the best similarity score between a job title and preferred titles."""
     if not job_title or not preferred_titles:
         return 0.0
 
     scores = compute_bulk_similarity(job_title, preferred_titles)
     return max(scores) if scores else 0.0
+
+
+# ─── Batch Embedding Cache ────────────────────────────────────────────────────
+
+
+class EmbeddingCache:
+    """
+    Pre-computes embeddings for all texts in a single model.encode() call,
+    then serves lookups by text key. Replaces hundreds of individual encode()
+    calls with one batched call.
+    """
+
+    def __init__(self) -> None:
+        self._vectors: Dict[str, np.ndarray] = {}
+
+    @property
+    def size(self) -> int:
+        return len(self._vectors)
+
+    def warm(self, texts: List[str], batch_size: int = 128) -> None:
+        """
+        Encode all *texts* that are not already cached in a single batch.
+        Duplicate / empty strings are handled gracefully.
+        """
+        new_texts = []
+        for t in texts:
+            key = t if t and t.strip() else " "
+            if key not in self._vectors:
+                new_texts.append(key)
+
+        if not new_texts:
+            return
+
+        unique_texts = list(dict.fromkeys(new_texts))
+        print(f"  📦  Batch-encoding {len(unique_texts)} unique texts …")
+        vecs = embed(unique_texts)  # (N, D) — uses the singleton model
+        for text, vec in zip(unique_texts, vecs):
+            self._vectors[text] = vec
+
+    def get(self, text: str) -> Optional[np.ndarray]:
+        key = text if text and text.strip() else " "
+        return self._vectors.get(key)
+
+    def cosine(self, text_a: str, text_b: str) -> float:
+        """Look up pre-computed vectors and return cosine similarity."""
+        va = self.get(text_a)
+        vb = self.get(text_b)
+        if va is None or vb is None:
+            return 0.0
+        score = float(cosine_similarity([va], [vb])[0][0])
+        return max(0.0, min(1.0, score))
+
+    def best_cosine(self, text: str, candidates: List[str]) -> float:
+        """Return the highest cosine similarity between text and any candidate."""
+        v = self.get(text)
+        if v is None or not candidates:
+            return 0.0
+        cand_vecs = [self.get(c) for c in candidates]
+        valid = [cv for cv in cand_vecs if cv is not None]
+        if not valid:
+            return 0.0
+        scores = cosine_similarity([v], np.array(valid))[0]
+        return max(0.0, min(1.0, float(scores.max())))

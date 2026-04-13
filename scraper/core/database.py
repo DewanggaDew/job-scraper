@@ -26,22 +26,24 @@ def _execute(request_builder: Any) -> Any:
         raise
 
 
+_client: Optional[Client] = None
+
+
 def get_client() -> Client:
-    url = os.environ["SUPABASE_URL"]
-    key = os.environ["SUPABASE_KEY"]
-    return create_client(url, key)
+    """Return a module-level singleton Supabase client (avoids re-creating per call)."""
+    global _client
+    if _client is None:
+        url = os.environ["SUPABASE_URL"]
+        key = os.environ["SUPABASE_KEY"]
+        _client = create_client(url, key)
+    return _client
 
 
 # ─── Jobs ────────────────────────────────────────────────────────────────────
 
 
-def upsert_job(job: Job) -> None:
-    """
-    Insert a new job or update the score fields if the job already exists.
-    We never overwrite status / notes / applied_at — those belong to the user.
-    """
-    client = get_client()
-
+def _job_to_row(job: Job) -> Dict[str, Any]:
+    """Convert a Job model to a dict suitable for Supabase upsert."""
     data: Dict[str, Any] = {
         "id": job.id,
         "title": job.title,
@@ -69,9 +71,33 @@ def upsert_job(job: Job) -> None:
             }
         )
 
-    # upsert — on conflict keep user-controlled columns (status, notes, applied_at)
-    # by only updating the columns we explicitly set above.
-    _execute(client.table("jobs").upsert(data, on_conflict="id"))
+    return data
+
+
+def upsert_job(job: Job) -> None:
+    """Insert or update a single job (kept for backward compatibility)."""
+    client = get_client()
+    _execute(client.table("jobs").upsert(_job_to_row(job), on_conflict="id"))
+
+
+def upsert_jobs_batch(jobs: List[Job], batch_size: int = 50) -> int:
+    """
+    Upsert jobs in batches. Returns the number of rows that failed to save.
+    PostgREST supports array upserts natively so each batch is one HTTP call.
+    """
+    client = get_client()
+    rows = [_job_to_row(j) for j in jobs]
+    errors = 0
+
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        try:
+            _execute(client.table("jobs").upsert(batch, on_conflict="id"))
+        except Exception as exc:
+            errors += len(batch)
+            print(f"  ⚠️  Batch upsert failed (rows {i}–{i + len(batch)}): {exc}")
+
+    return errors
 
 
 def purge_stale_jobs(max_age_days: int = 7) -> int:
