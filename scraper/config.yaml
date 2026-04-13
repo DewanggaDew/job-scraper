@@ -33,6 +33,98 @@ job_preferences:
       - "Jakarta, Indonesia"
 
 # ============================================================
+#  Title Relevance Filter
+#  Only keep scraped jobs whose title contains at least one of
+#  these keywords (case-insensitive).  This prevents irrelevant
+#  results (e.g. "High School Teacher") from polluting the DB.
+# ============================================================
+title_filter:
+  # Titles must contain at least one of these (case-insensitive substring match)
+  allowed_keywords:
+    - "software"
+    - "developer"
+    - "engineer"
+    - "engineering"
+    - "frontend"
+    - "front-end"
+    - "front end"
+    - "backend"
+    - "back-end"
+    - "back end"
+    - "full stack"
+    - "full-stack"
+    - "fullstack"
+    - "web developer"
+    - "web engineer"
+    - "devops"
+    - "sre"
+    - "site reliability"
+    - "cloud engineer"
+    - "data engineer"
+    - "machine learning"
+    - "ml engineer"
+    - "ai engineer"
+    - "product manager"
+    - "product owner"
+    - "scrum master"
+    - "technical program"
+    - "it consultant"
+    - "it specialist"
+    - "it analyst"
+    - "it project"
+    - "it manager"
+    - "it applications"
+    - "business analyst"
+    - "systems analyst"
+    - "technical consultant"
+    - "tech lead"
+    - "tech consultant"
+    - "solutions architect"
+    - "application developer"
+    - "applications developer"
+    - "mobile developer"
+    - "android developer"
+    - "ios developer"
+    - "qa engineer"
+    - "quality assurance"
+    - "test engineer"
+    - "automation engineer"
+    - "security engineer"
+    - "cybersecurity"
+    - "network engineer"
+    - "infrastructure"
+    - "platform engineer"
+    - "programmer"
+    - "coder"
+
+  # Titles matching any of these are always rejected (case-insensitive),
+  # even if they also match an allowed keyword.
+  blocked_keywords:
+    - "teacher"
+    - "teaching"
+    - "lecturer"
+    - "professor"
+    - "principal"
+    - "tutor"
+    - "instructor"
+    - "nurse"
+    - "nursing"
+    - "dentist"
+    - "physician"
+    - "pharmacist"
+    - "chef"
+    - "cook"
+    - "driver"
+    - "janitor"
+    - "cleaner"
+    - "security guard"
+    - "receptionist"
+    - "cashier"
+    - "waiter"
+    - "waitress"
+    - "barista"
+
+# ============================================================
 #  Scoring Weights & Thresholds
 # ============================================================
 scoring:

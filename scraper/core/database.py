@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from core.models import CVProfile, Job, JobScore, JobStatus, MatchLabel, ScrapeSummary
@@ -72,6 +72,44 @@ def upsert_job(job: Job) -> None:
     # upsert — on conflict keep user-controlled columns (status, notes, applied_at)
     # by only updating the columns we explicitly set above.
     _execute(client.table("jobs").upsert(data, on_conflict="id"))
+
+
+def purge_stale_jobs(max_age_days: int = 7) -> int:
+    """
+    Delete jobs that are both posted 7+ days ago AND scraped 7+ days ago.
+    Protects jobs the user has interacted with (status != 'new').
+    Returns the number of deleted rows.
+    """
+    client = get_client()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+
+    # A job is stale when ALL three conditions are met:
+    #   - scraped_at is older than the cutoff
+    #   - posted_at is older than the cutoff (NULL posted_at → keep the job)
+    #   - the user hasn't saved / applied / etc.
+    stale = _execute(
+        client.table("jobs")
+        .select("id")
+        .eq("status", "new")
+        .lt("scraped_at", cutoff)
+        .not_.is_("posted_at", "null")
+        .lt("posted_at", cutoff)
+    )
+    stale_rows = stale.data or []
+
+    ids_to_delete = [row["id"] for row in stale_rows]
+
+    if not ids_to_delete:
+        return 0
+
+    # Supabase .in_() has a practical limit; batch in chunks of 200.
+    deleted = 0
+    for i in range(0, len(ids_to_delete), 200):
+        batch = ids_to_delete[i : i + 200]
+        _execute(client.table("jobs").delete().in_("id", batch))
+        deleted += len(batch)
+
+    return deleted
 
 
 def get_existing_job_ids() -> Set[str]:

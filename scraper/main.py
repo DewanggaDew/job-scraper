@@ -38,12 +38,14 @@ from core.database import (
     get_existing_job_ids,
     get_new_strong_matches,
     log_scrape_run,
+    purge_stale_jobs,
     upsert_cv_profile,
     upsert_job,
 )
 from core.deduplicator import is_duplicate
 from core.models import Job, ScrapeSummary
 from core.notifier import send_match_notification
+from core.relevance_filter import filter_relevant_jobs
 from ranking.cv_parser import load_cv_profiles
 from ranking.scorer import score_jobs_bulk
 from scrapers.glints import GlintsScraper
@@ -128,6 +130,19 @@ def run() -> None:
         config.get("notification", {}).get("send_decent_matches", True)
     )
 
+    # ── Step 1b: Purge stale jobs ──────────────────────────────────────────────
+    print("\n🧹  Purging stale jobs (posted & scraped 7+ days ago) …")
+    try:
+        stale_count = purge_stale_jobs(max_age_days=7)
+        summary.stale_purged = stale_count
+        if stale_count:
+            print(f"  Removed {stale_count} stale jobs from database.")
+        else:
+            print("  No stale jobs to remove.")
+    except Exception as exc:
+        print(f"  ⚠️  Stale-job purge failed: {exc}")
+        summary.add_error("purge", str(exc))
+
     # ── Step 2: Parse CV profiles ─────────────────────────────────────────────
     print("\n📋  Parsing CV profiles …")
     try:
@@ -182,7 +197,23 @@ def run() -> None:
             traceback.print_exc()
             # Never let one scraper failure abort the whole run
 
-    print(f"\n  Total scraped (before dedup): {len(all_scraped_jobs)}")
+    print(f"\n  Total scraped (before filtering): {len(all_scraped_jobs)}")
+
+    # ── Step 4b: Filter irrelevant titles ─────────────────────────────────────
+    title_filter_cfg = config.get("title_filter", {})
+    allowed_kw = title_filter_cfg.get("allowed_keywords", [])
+    blocked_kw = title_filter_cfg.get("blocked_keywords", [])
+
+    if allowed_kw:
+        print("\n🎯  Filtering irrelevant job titles …")
+        all_scraped_jobs, irrelevant_count = filter_relevant_jobs(
+            all_scraped_jobs, allowed_kw, blocked_kw
+        )
+        summary.irrelevant_filtered = irrelevant_count
+        print(
+            f"  {len(all_scraped_jobs)} relevant  |  "
+            f"{irrelevant_count} irrelevant filtered out"
+        )
 
     # ── Step 5: Deduplicate ───────────────────────────────────────────────────
     print("\n🔁  Deduplicating …")
@@ -304,7 +335,9 @@ def _finish(summary: ScrapeSummary, email_sent: bool) -> None:
     print("\n" + "=" * 65)
     print("  📊  Run Summary")
     print("=" * 65)
+    print(f"  Stale purged    : {summary.stale_purged}")
     print(f"  Total scraped   : {summary.total_scraped}")
+    print(f"  Irrelevant      : {summary.irrelevant_filtered}")
     print(f"  New jobs        : {summary.new_jobs}")
     print(f"  Duplicates      : {summary.duplicates_skipped}")
     print(f"  Strong matches  : {summary.strong_matches}")

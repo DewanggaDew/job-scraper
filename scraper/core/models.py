@@ -74,6 +74,8 @@ class ScrapeSummary(BaseModel):
     total_scraped: int = 0
     new_jobs: int = 0
     duplicates_skipped: int = 0
+    irrelevant_filtered: int = 0
+    stale_purged: int = 0
     strong_matches: int = 0
     decent_matches: int = 0
     low_matches: int = 0
