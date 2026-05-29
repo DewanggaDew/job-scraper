@@ -24,10 +24,13 @@ except ImportError:
 
 # SEEK hosts the Jobstreet product on regional subdomains. The legacy
 # www.jobstreet.com.* hosts often serve a thin shell; listings hydrate on
-# my.jobstreet.com (MY) and id.jobstreet.com (ID).
+# my.jobstreet.com (MY), id.jobstreet.com (ID) and sg.jobstreet.com (SG).
+# (Australia is on seek.com.au and Hong Kong on jobsdb.com — different
+# brands/markup, so they are handled by the Indeed/LinkedIn scrapers instead.)
 _DOMAINS: dict[str, str] = {
     "malaysia": "my.jobstreet.com",
     "indonesia": "id.jobstreet.com",
+    "singapore": "sg.jobstreet.com",
 }
 
 # Wait for any of these before parsing (layout A/B tests change often).
@@ -47,6 +50,7 @@ _LOCATION_DOMAIN_MAP: dict[str, str] = {
     "malaysia": "malaysia",
     "jakarta, indonesia": "indonesia",
     "indonesia": "indonesia",
+    "singapore": "singapore",
 }
 
 
@@ -610,12 +614,14 @@ class JobStreetScraper(BaseScraper):
         """
         # Strip country suffix from location for the 'where' param
         where = re.sub(
-            r",?\s*(malaysia|indonesia)$", "", location, flags=re.IGNORECASE
+            r",?\s*(malaysia|indonesia|singapore)$", "", location, flags=re.IGNORECASE
         ).strip()
         # "Malaysia" / "Indonesia" alone become '' after the strip — SEEK needs a region.
         if not where:
             if "id.jobstreet" in domain:
                 where = "Indonesia"
+            elif "sg.jobstreet" in domain:
+                where = "Singapore"
             else:
                 where = "Malaysia"
         return (
@@ -637,4 +643,6 @@ class JobStreetScraper(BaseScraper):
             return "malaysia"
         if "indonesia" in location_lower:
             return "indonesia"
+        if "singapore" in location_lower:
+            return "singapore"
         return None
