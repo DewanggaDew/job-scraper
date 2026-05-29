@@ -39,6 +39,8 @@ const PIPELINE_COLUMNS: {
 }[] = [
   { status: 'new', label: 'New' },
   { status: 'saved', label: 'Saved' },
+  { status: 'queued_apply', label: 'Queued' },
+  { status: 'failed_apply', label: 'Failed' },
   { status: 'applied', label: 'Applied' },
   { status: 'interviewing', label: 'Interviewing' },
   { status: 'offer', label: 'Offer' },
@@ -98,6 +100,8 @@ export default function TrackerPage() {
 
   const stats = {
     saved: jobs.filter((j) => j.status === 'saved').length,
+    queued: jobs.filter((j) => j.status === 'queued_apply').length,
+    failed: jobs.filter((j) => j.status === 'failed_apply').length,
     applied: jobs.filter((j) => j.status === 'applied').length,
     interviewing: jobs.filter((j) => j.status === 'interviewing').length,
     offer: jobs.filter((j) => j.status === 'offer').length,
@@ -132,8 +136,10 @@ export default function TrackerPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
         <PipelineStat label="Saved" value={stats.saved} accent="text-violet-400" />
+        <PipelineStat label="Queued" value={stats.queued} accent="text-amber-400" />
+        <PipelineStat label="Failed" value={stats.failed} accent="text-rose-400" />
         <PipelineStat label="Applied" value={stats.applied} accent="text-purple-400" />
         <PipelineStat label="Interviewing" value={stats.interviewing} accent="text-orange-400" />
         <PipelineStat label="Offers" value={stats.offer} accent="text-emerald-400" />

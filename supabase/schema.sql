@@ -10,6 +10,8 @@ CREATE TYPE location_type AS ENUM ('remote', 'hybrid', 'on-site');
 CREATE TYPE job_status AS ENUM (
   'new',
   'saved',
+  'queued_apply',
+  'failed_apply',
   'applied',
   'interviewing',
   'offer',
@@ -19,6 +21,20 @@ CREATE TYPE job_status AS ENUM (
 CREATE TYPE match_label AS ENUM ('Strong', 'Decent', 'Low');
 
 CREATE TYPE cv_type AS ENUM ('swe', 'pm');
+
+CREATE TYPE contact_role AS ENUM (
+  'recruiter', 'talent_acquisition', 'hiring_manager', 'hr', 'unknown'
+);
+
+CREATE TYPE contact_source AS ENUM ('company_site', 'inferred', 'linkedin');
+
+CREATE TYPE email_status AS ENUM (
+  'none', 'guessed', 'mx_valid', 'verified', 'invalid'
+);
+
+CREATE TYPE contact_status AS ENUM (
+  'new', 'drafted', 'contacted', 'replied', 'ignored'
+);
 
 -- ── Tables ───────────────────────────────────────────────────
 
@@ -50,10 +66,15 @@ CREATE TABLE IF NOT EXISTS jobs (
   match_label     match_label,
   suggested_cv    cv_type,
 
+  -- Work authorization: TRUE/FALSE/NULL (NULL = unknown country, not penalised)
+  work_authorized BOOLEAN,
+
   -- Application tracking
   status          job_status NOT NULL DEFAULT 'new',
   notes           TEXT,
-  applied_at      TIMESTAMPTZ
+  applied_at      TIMESTAMPTZ,
+  auto_apply_error TEXT,
+  auto_apply_attempted_at TIMESTAMPTZ
 );
 
 -- cv_profiles: cached parsed data from the two CVs
@@ -65,6 +86,34 @@ CREATE TABLE IF NOT EXISTS cv_profiles (
   seniority        TEXT     NOT NULL DEFAULT 'entry',
   raw_text         TEXT     NOT NULL DEFAULT '',
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- contacts: people at target companies to reach out to (recruiters, HR, hiring managers)
+CREATE TABLE IF NOT EXISTS contacts (
+  id              TEXT PRIMARY KEY,          -- sha256(linkedin_url | full_name|company|email)
+
+  company         TEXT NOT NULL,
+  company_domain  TEXT,
+
+  full_name       TEXT NOT NULL,
+  title           TEXT,                      -- the person's own job title
+  role            contact_role NOT NULL DEFAULT 'unknown',
+
+  email           TEXT,
+  email_status    email_status NOT NULL DEFAULT 'none',
+  linkedin_url    TEXT,
+
+  source          contact_source NOT NULL,
+  confidence      NUMERIC(4, 3) NOT NULL DEFAULT 0,  -- 0.000 – 1.000
+
+  related_job_id  TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+
+  draft_message   TEXT,
+  status          contact_status NOT NULL DEFAULT 'new',
+
+  notes           TEXT,
+  scraped_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- scrape_runs: audit log of every scraper execution
@@ -109,6 +158,12 @@ CREATE INDEX IF NOT EXISTS idx_jobs_posted_at
 CREATE INDEX IF NOT EXISTS idx_jobs_scraped_at
   ON jobs (scraped_at DESC);
 
+-- Contacts lookups (by company, by linked job, by status/role)
+CREATE INDEX IF NOT EXISTS idx_contacts_company     ON contacts (company);
+CREATE INDEX IF NOT EXISTS idx_contacts_related_job ON contacts (related_job_id);
+CREATE INDEX IF NOT EXISTS idx_contacts_status      ON contacts (status);
+CREATE INDEX IF NOT EXISTS idx_contacts_role        ON contacts (role);
+
 -- ── Auto-update updated_at ───────────────────────────────────
 
 CREATE OR REPLACE FUNCTION set_updated_at()
@@ -127,6 +182,10 @@ CREATE TRIGGER trg_cv_profiles_updated_at
   BEFORE UPDATE ON cv_profiles
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+CREATE TRIGGER trg_contacts_updated_at
+  BEFORE UPDATE ON contacts
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 -- ── Row-Level Security ───────────────────────────────────────
 -- This is a personal tool; we disable RLS so the service-role
 -- key used by GitHub Actions can read/write freely.
@@ -136,6 +195,7 @@ CREATE TRIGGER trg_cv_profiles_updated_at
 ALTER TABLE jobs          DISABLE ROW LEVEL SECURITY;
 ALTER TABLE cv_profiles   DISABLE ROW LEVEL SECURITY;
 ALTER TABLE scrape_runs   DISABLE ROW LEVEL SECURITY;
+ALTER TABLE contacts      DISABLE ROW LEVEL SECURITY;
 
 -- ── Seed CV Profiles ─────────────────────────────────────────
 -- Pre-load Dewangga's two CV profiles so the scorer works
