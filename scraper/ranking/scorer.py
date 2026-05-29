@@ -18,19 +18,28 @@ from ranking.job_parser import (
     extract_seniority,
     extract_years_required,
 )
+from ranking.work_auth import assess_work_authorization
 
 # ─── Config loader (cached) ──────────────────────────────────────────────────
 
+_full_config: Optional[dict] = None
 _scoring_config: Optional[dict] = None
+
+
+def _load_full_config() -> dict:
+    global _full_config
+    if _full_config is None:
+        scraper_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(scraper_root, "config.yaml")
+        with open(config_path, "r", encoding="utf-8") as fh:
+            _full_config = yaml.safe_load(fh) or {}
+    return _full_config
 
 
 def _load_scoring_config() -> dict:
     global _scoring_config
     if _scoring_config is None:
-        scraper_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        config_path = os.path.join(scraper_root, "config.yaml")
-        with open(config_path, "r", encoding="utf-8") as fh:
-            _scoring_config = yaml.safe_load(fh).get("scoring", {})
+        _scoring_config = _load_full_config().get("scoring", {})
     return _scoring_config
 
 
@@ -67,6 +76,20 @@ def score_job(
     else:
         best = pm_score
         best.suggested_cv = "pm"
+
+    # ── Work-authorization adjustment ─────────────────────────────────────────
+    # Down-rank roles in countries the candidate isn't authorised to work in.
+    # The multiplier is applied to the overall score (so labels/notifications
+    # reflect it) while the sub-scores keep showing the raw fit.
+    full_config = _load_full_config()
+    work_auth = full_config.get("candidate_profile", {}).get("work_authorization", {})
+    factors = config.get("work_auth", {})
+    factor, authorized, _note = assess_work_authorization(
+        job.location, job.description, work_auth, factors
+    )
+    if factor != 1.0:
+        best.overall = round(min(max(best.overall * factor, 0.0), 100.0), 1)
+    job.work_authorized = authorized
 
     if best.overall >= thresholds.get("strong", 75):
         best.label = MatchLabel.STRONG
