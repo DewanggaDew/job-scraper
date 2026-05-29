@@ -4,7 +4,20 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set
 
-from core.models import CVProfile, Job, JobScore, JobStatus, MatchLabel, ScrapeSummary
+from core.models import (
+    Contact,
+    ContactRole,
+    ContactSource,
+    ContactStatus,
+    CVProfile,
+    EmailStatus,
+    Job,
+    JobScore,
+    JobStatus,
+    LocationType,
+    MatchLabel,
+    ScrapeSummary,
+)
 
 from postgrest.exceptions import APIError
 from supabase import Client, create_client
@@ -56,6 +69,12 @@ def _job_to_row(job: Job) -> Dict[str, Any]:
         "posted_at": job.posted_at.isoformat() if job.posted_at else None,
         "scraped_at": job.scraped_at.isoformat(),
         "easy_apply": job.easy_apply,
+        "work_authorized": job.work_authorized,
+        "status": job.status.value,
+        "notes": job.notes,
+        "applied_at": job.applied_at.isoformat() if job.applied_at else None,
+        "auto_apply_error": job.auto_apply_error,
+        "auto_apply_attempted_at": job.auto_apply_attempted_at.isoformat() if job.auto_apply_attempted_at else None,
     }
 
     if job.score:
@@ -317,4 +336,369 @@ def log_scrape_run(
                 or ("; ".join(summary.errors) if summary.errors else None),
             }
         )
+    )
+
+
+# ─── Auto-Apply Helpers ────────────────────────────────────────────────────────
+
+
+def row_to_job(row: Dict[str, Any]) -> Job:
+    """Parse a flat database row back to a structured Job object."""
+    posted_at = None
+    if row.get("posted_at"):
+        posted_at = datetime.fromisoformat(row["posted_at"].replace("Z", "+00:00"))
+    
+    scraped_at = datetime.fromisoformat(row["scraped_at"].replace("Z", "+00:00"))
+    
+    applied_at = None
+    if row.get("applied_at"):
+        applied_at = datetime.fromisoformat(row["applied_at"].replace("Z", "+00:00"))
+        
+    auto_apply_attempted_at = None
+    if row.get("auto_apply_attempted_at"):
+        auto_apply_attempted_at = datetime.fromisoformat(row["auto_apply_attempted_at"].replace("Z", "+00:00"))
+
+    score = None
+    if row.get("match_score") is not None:
+        score = JobScore(
+            overall=float(row["match_score"]),
+            skills=float(row.get("skills_score") or 0.0),
+            seniority=float(row.get("seniority_score") or 0.0),
+            recency=float(row.get("recency_score") or 0.0),
+            title=float(row.get("title_score") or 0.0),
+            label=MatchLabel(row.get("match_label") or "Low"),
+            suggested_cv=row.get("suggested_cv") or "swe",
+        )
+
+    return Job(
+        id=row["id"],
+        title=row["title"],
+        company=row["company"],
+        location=row.get("location"),
+        location_type=LocationType(row["location_type"]) if row.get("location_type") else None,
+        source=row["source"],
+        url=row["url"],
+        description=row.get("description"),
+        posted_at=posted_at,
+        scraped_at=scraped_at,
+        easy_apply=bool(row.get("easy_apply")),
+        work_authorized=row.get("work_authorized"),
+        score=score,
+        status=JobStatus(row.get("status") or "new"),
+        notes=row.get("notes"),
+        applied_at=applied_at,
+        auto_apply_error=row.get("auto_apply_error"),
+        auto_apply_attempted_at=auto_apply_attempted_at,
+    )
+
+
+def get_queued_jobs() -> List[Job]:
+    """Fetch all jobs explicitly queued by the user for auto-apply.
+
+    Restricted to LinkedIn: the AutoApplier only implements the LinkedIn Easy
+    Apply flow, and other sources (e.g. JobStreet) also set easy_apply=True but
+    use their own application UI that these selectors would never match.
+    """
+    client = get_client()
+    result = _execute(
+        client.table("jobs")
+        .select("*")
+        .eq("status", "queued_apply")
+        .eq("easy_apply", True)
+        .eq("source", "linkedin")
+    )
+    return [row_to_job(r) for r in (result.data or [])]
+
+
+def get_auto_apply_candidates(min_score: float) -> List[Job]:
+    """Fetch newly scraped jobs that are strong matches and eligible for auto-apply.
+
+    Restricted to LinkedIn (see get_queued_jobs for why).
+    """
+    client = get_client()
+    result = _execute(
+        client.table("jobs")
+        .select("*")
+        .eq("status", "new")
+        .eq("easy_apply", True)
+        .eq("source", "linkedin")
+        .gte("match_score", min_score)
+    )
+    return [row_to_job(r) for r in (result.data or [])]
+
+
+def count_recent_applications(within_hours: int = 24) -> int:
+    """Count successful applications submitted within the last *within_hours*.
+
+    Used to enforce a true daily cap across runs (the scraper cron fires every
+    4 hours, so a per-run cap alone would allow ~6× the intended daily volume).
+    """
+    client = get_client()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=within_hours)).isoformat()
+    result = _execute(
+        client.table("jobs")
+        .select("id", count="exact")
+        .eq("status", "applied")
+        .gte("applied_at", cutoff)
+    )
+    return result.count or 0
+
+
+def get_draft_candidates(policy: str, min_score: float) -> List[Job]:
+    """Fetch jobs that should get an Apply-Assistant draft and don't have one yet.
+
+    Unlike auto-apply, drafting is useful for ANY source (it never touches the
+    site), so there's no LinkedIn/easy_apply restriction here.
+      • policy "manual" → jobs the user queued (status 'queued_apply')
+      • policy "auto"   → fresh strong matches (status 'new', score >= min_score)
+      • policy "both"   → the union of the two
+    """
+    client = get_client()
+    jobs: List[Job] = []
+    seen: Set[str] = set()
+
+    def _add(rows: List[Dict[str, Any]]) -> None:
+        for r in rows:
+            if r["id"] in seen or r.get("application_draft"):
+                continue  # skip duplicates and jobs already drafted
+            seen.add(r["id"])
+            jobs.append(row_to_job(r))
+
+    if policy in ("manual", "both"):
+        res = _execute(client.table("jobs").select("*").eq("status", "queued_apply"))
+        _add(res.data or [])
+
+    if policy in ("auto", "both"):
+        res = _execute(
+            client.table("jobs")
+            .select("*")
+            .eq("status", "new")
+            .gte("match_score", min_score)
+            .order("match_score", desc=True)
+        )
+        _add(res.data or [])
+
+    return jobs
+
+
+def save_application_draft(job_id: str, draft: Dict[str, Any]) -> None:
+    """Persist the Apply-Assistant draft (cover letter + talking points) for a job."""
+    client = get_client()
+    _execute(client.table("jobs").update({"application_draft": draft}).eq("id", job_id))
+
+
+def update_auto_apply_status(
+    job_id: str,
+    status: JobStatus,
+    error: Optional[str] = None,
+) -> None:
+    """Update the status, attempted timestamp, and error message for a job application."""
+    client = get_client()
+    now = datetime.now(timezone.utc).isoformat()
+    
+    payload: Dict[str, Any] = {
+        "status": status.value,
+        "auto_apply_attempted_at": now,
+    }
+    
+    if error is not None:
+        payload["auto_apply_error"] = error
+    else:
+        payload["auto_apply_error"] = None
+        
+    if status == JobStatus.APPLIED:
+        payload["applied_at"] = now
+
+    _execute(client.table("jobs").update(payload).eq("id", job_id))
+
+
+# ─── Contacts ──────────────────────────────────────────────────────────────────
+
+
+def _contact_to_row(contact: Contact) -> Dict[str, Any]:
+    """Convert a Contact model to a dict suitable for Supabase upsert."""
+    return {
+        "id": contact.id,
+        "company": contact.company,
+        "company_domain": contact.company_domain,
+        "full_name": contact.full_name,
+        "title": contact.title,
+        "role": contact.role.value,
+        "email": contact.email,
+        "email_status": contact.email_status.value,
+        "linkedin_url": contact.linkedin_url,
+        "source": contact.source.value,
+        "confidence": round(contact.confidence, 3),
+        "related_job_id": contact.related_job_id,
+        "draft_message": contact.draft_message,
+        "status": contact.status.value,
+        "notes": contact.notes,
+        "scraped_at": contact.scraped_at.isoformat(),
+    }
+
+
+def contact_row_to_model(row: Dict[str, Any]) -> Contact:
+    """Parse a flat database row back to a structured Contact object."""
+    scraped_at = datetime.fromisoformat(row["scraped_at"].replace("Z", "+00:00"))
+    return Contact(
+        id=row["id"],
+        company=row["company"],
+        company_domain=row.get("company_domain"),
+        full_name=row["full_name"],
+        title=row.get("title"),
+        role=ContactRole(row.get("role") or "unknown"),
+        email=row.get("email"),
+        email_status=EmailStatus(row.get("email_status") or "none"),
+        linkedin_url=row.get("linkedin_url"),
+        source=ContactSource(row["source"]),
+        confidence=float(row.get("confidence") or 0.0),
+        related_job_id=row.get("related_job_id"),
+        draft_message=row.get("draft_message"),
+        status=ContactStatus(row.get("status") or "new"),
+        notes=row.get("notes"),
+        scraped_at=scraped_at,
+    )
+
+
+def get_existing_contact_ids() -> Set[str]:
+    """Return the set of all contact IDs already in the database (for deduplication)."""
+    client = get_client()
+    result = _execute(client.table("contacts").select("id"))
+    return {row["id"] for row in (result.data or [])}
+
+
+def upsert_contacts_batch(contacts: List[Contact], batch_size: int = 50) -> int:
+    """Upsert contacts in batches. Returns the number of rows that failed to save."""
+    client = get_client()
+    rows = [_contact_to_row(c) for c in contacts]
+    errors = 0
+
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        try:
+            _execute(client.table("contacts").upsert(batch, on_conflict="id"))
+        except Exception as exc:
+            errors += len(batch)
+            print(f"  ⚠️  Contact batch upsert failed (rows {i}–{i + len(batch)}): {exc}")
+
+    return errors
+
+
+def get_companies_needing_contacts(
+    min_score: float,
+    statuses: Optional[List[str]] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Return distinct companies worth chasing that have no contacts yet.
+
+    A company qualifies when it has at least one job that is either a strong/decent
+    match (match_score >= *min_score*) OR whose status is in *statuses* (e.g. the
+    user saved / queued / applied to it). Companies that already have any contact
+    row are excluded so we don't re-process them every run.
+
+    Returns one dict per company: {company, related_job_id, url, company_domain_hint}
+    using a representative (highest-scoring) job as the seed.
+    """
+    client = get_client()
+
+    # Pull candidate jobs (filtered server-side on score; status OR'd in below).
+    fields = "id, company, url, source, match_score, status"
+    score_rows = _execute(
+        client.table("jobs")
+        .select(fields)
+        .gte("match_score", min_score)
+        .order("match_score", desc=True)
+    ).data or []
+
+    status_rows: List[Dict[str, Any]] = []
+    if statuses:
+        status_rows = _execute(
+            client.table("jobs").select(fields).in_("status", statuses)
+        ).data or []
+
+    # Companies that already have a contact — skip them.
+    existing = _execute(client.table("contacts").select("company")).data or []
+    companies_with_contacts = {
+        (row.get("company") or "").strip().lower() for row in existing
+    }
+
+    # Keep the best (highest-scoring) representative job per company.
+    best_by_company: Dict[str, Dict[str, Any]] = {}
+    for row in score_rows + status_rows:
+        company = (row.get("company") or "").strip()
+        if not company:
+            continue
+        key = company.lower()
+        if key in companies_with_contacts:
+            continue
+        prev = best_by_company.get(key)
+        if prev is None or (row.get("match_score") or 0) > (prev.get("match_score") or 0):
+            best_by_company[key] = row
+
+    results: List[Dict[str, Any]] = []
+    for row in best_by_company.values():
+        results.append(
+            {
+                "company": row["company"],
+                "related_job_id": row["id"],
+                "url": row.get("url"),
+                "source": row.get("source"),
+            }
+        )
+
+    return results[:limit]
+
+
+def get_contacts(
+    *,
+    company: Optional[str] = None,
+    related_job_id: Optional[str] = None,
+    status: Optional[str] = None,
+    role: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """Flexible contact query used by the dashboard."""
+    client = get_client()
+
+    query = (
+        client.table("contacts")
+        .select("*")
+        .order("confidence", desc=True)
+        .range(offset, offset + limit - 1)
+    )
+
+    if company:
+        query = query.eq("company", company)
+    if related_job_id:
+        query = query.eq("related_job_id", related_job_id)
+    if status:
+        query = query.eq("status", status)
+    if role:
+        query = query.eq("role", role)
+
+    result = _execute(query)
+    return result.data or []
+
+
+def get_contacts_for_job(job_id: str) -> List[Dict[str, Any]]:
+    """Return contacts linked to a specific job."""
+    return get_contacts(related_job_id=job_id)
+
+
+def update_contact_status(contact_id: str, status: ContactStatus) -> None:
+    """Update the user-controlled status of a contact."""
+    client = get_client()
+    _execute(
+        client.table("contacts").update({"status": status.value}).eq("id", contact_id)
+    )
+
+
+def update_contact_draft(contact_id: str, draft_message: str) -> None:
+    """Update the drafted outreach message for a contact."""
+    client = get_client()
+    _execute(
+        client.table("contacts")
+        .update({"draft_message": draft_message})
+        .eq("id", contact_id)
     )

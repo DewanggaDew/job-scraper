@@ -37,6 +37,16 @@ _COUNTRY_CONFIG: dict[str, dict] = {
         "country_code": "ID",
         "domain": "glints.com/id",
     },
+    "Singapore": {
+        "base_url": "https://glints.com/sg/opportunities/jobs/explore",
+        "country_code": "SG",
+        "domain": "glints.com/sg",
+    },
+    "Taiwan": {
+        "base_url": "https://glints.com/tw/opportunities/jobs/explore",
+        "country_code": "TW",
+        "domain": "glints.com/tw",
+    },
 }
 
 # ─── CSS Selectors ────────────────────────────────────────────────────────────
@@ -83,9 +93,13 @@ class GlintsScraper(BaseScraper):
 
     Fallback: Playwright renders the SPA, scrolls, and parses cards / links.
 
-    Covers:
+    Covers Glints' active markets:
         • Malaysia  (glints.com/my) — for Selangor / KL listings
         • Indonesia (glints.com/id) — for Jakarta listings
+        • Singapore (glints.com/sg)
+        • Taiwan    (glints.com/tw)
+    (Glints does not operate in the US / UK / Australia / Hong Kong —
+    those countries are covered by the Indeed and LinkedIn scrapers.)
     """
 
     source_name = "glints"

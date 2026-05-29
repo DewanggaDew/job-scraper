@@ -8,6 +8,9 @@
 playwright==1.44.0
 linkedin-api==2.3.0          # tomquirk/linkedin-api (unofficial)
 
+# ── Contact discovery ────────────────────────────────────────
+dnspython==2.6.1             # MX-record checks for email-domain verification
+
 # ── CV Parsing ───────────────────────────────────────────────
 pdfplumber==0.11.0
 

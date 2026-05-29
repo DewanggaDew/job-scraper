@@ -166,6 +166,8 @@ export default async function JobFeedPage({ searchParams }: PageProps) {
                 { value: 'all', label: 'All statuses' },
                 { value: 'new', label: 'New' },
                 { value: 'saved', label: 'Saved' },
+                { value: 'queued_apply', label: 'Queued for Apply' },
+                { value: 'failed_apply', label: 'Apply Failed' },
                 { value: 'applied', label: 'Applied' },
                 { value: 'interviewing', label: 'Interviewing' },
                 { value: 'offer', label: 'Offer' },
@@ -317,6 +319,15 @@ function JobCard({ job }: { job: Job }) {
           {job.easy_apply && (
             <Badge variant="secondary" className="h-5 text-[10px] font-medium">
               Easy apply
+            </Badge>
+          )}
+          {job.work_authorized === false && (
+            <Badge
+              variant="outline"
+              className="h-5 text-[10px] font-medium border-amber-500/40 bg-amber-500/10 text-amber-300"
+              title="Likely needs visa sponsorship — match score reduced"
+            >
+              Visa
             </Badge>
           )}
           <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium capitalize', statusColorClass)}>

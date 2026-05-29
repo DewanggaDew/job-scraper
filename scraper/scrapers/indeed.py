@@ -35,6 +35,36 @@ _COUNTRY_CONFIG: dict[str, dict] = {
         "base_url": "https://id.indeed.com/lowongan",
         "location_default": "Indonesia",
     },
+    "Singapore": {
+        "domain": "sg.indeed.com",
+        "base_url": "https://sg.indeed.com/jobs",
+        "location_default": "Singapore",
+    },
+    "Australia": {
+        "domain": "au.indeed.com",
+        "base_url": "https://au.indeed.com/jobs",
+        "location_default": "Australia",
+    },
+    "Taiwan": {
+        "domain": "tw.indeed.com",
+        "base_url": "https://tw.indeed.com/jobs",
+        "location_default": "Taiwan",
+    },
+    "Hong Kong": {
+        "domain": "hk.indeed.com",
+        "base_url": "https://hk.indeed.com/jobs",
+        "location_default": "Hong Kong",
+    },
+    "United Kingdom": {
+        "domain": "uk.indeed.com",
+        "base_url": "https://uk.indeed.com/jobs",
+        "location_default": "United Kingdom",
+    },
+    "United States": {
+        "domain": "www.indeed.com",
+        "base_url": "https://www.indeed.com/jobs",
+        "location_default": "United States",
+    },
 }
 
 _LOCATION_COUNTRY_MAP: dict[str, str] = {
@@ -44,6 +74,18 @@ _LOCATION_COUNTRY_MAP: dict[str, str] = {
     "malaysia": "Malaysia",
     "jakarta, indonesia": "Indonesia",
     "indonesia": "Indonesia",
+    "singapore": "Singapore",
+    "sydney, australia": "Australia",
+    "melbourne, australia": "Australia",
+    "australia": "Australia",
+    "taipei, taiwan": "Taiwan",
+    "taiwan": "Taiwan",
+    "hong kong": "Hong Kong",
+    "london, united kingdom": "United Kingdom",
+    "united kingdom": "United Kingdom",
+    "new york, united states": "United States",
+    "san francisco, united states": "United States",
+    "united states": "United States",
 }
 
 # ─── CSS Selectors ────────────────────────────────────────────────────────────
@@ -84,8 +126,9 @@ _SEL = {
 
 class IndeedScraper(BaseScraper):
     """
-    Scrapes job listings from Indeed Malaysia (malaysia.indeed.com)
-    and Indeed Indonesia (id.indeed.com).
+    Scrapes job listings from Indeed across all configured countries:
+    Malaysia, Indonesia, Singapore, Australia, Taiwan, Hong Kong,
+    the United Kingdom, and the United States (each on its own regional host).
 
     Primary method: official-style search **RSS** feeds (``/rss?q=…&l=…``) via
     HTTP — no browser and usually no CAPTCHA for modest volume.

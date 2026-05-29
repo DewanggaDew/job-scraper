@@ -25,6 +25,8 @@ Environment variables required (set as GitHub Secrets):
     LINKEDIN_EMAIL        LinkedIn account email
     LINKEDIN_PASSWORD     LinkedIn account password
     LINKEDIN_COOKIES      (optional) JSON-serialised Playwright session cookies
+    OPENROUTER_API_KEY    (optional) OpenRouter key for the Apply Assistant to
+                          draft cover letters; assistant is skipped if unset
     DASHBOARD_URL         (optional) URL of the deployed Vercel dashboard
 """
 
@@ -338,6 +340,28 @@ def run() -> None:
         summary.add_error("notifier", str(exc))
         traceback.print_exc()
 
+    # ── Step 8b: Run Apply Assistant ─────────────────────────────────────────
+    print("\n📝  Running Apply Assistant (drafting cover letters) …")
+    try:
+        from core.apply_assistant import ApplyAssistant
+        assistant = ApplyAssistant(config)
+        drafted_count = assistant.run()
+        print(f"  📝  Apply Assistant complete: drafted {drafted_count} applications.")
+    except Exception as exc:
+        print(f"  ❌  Apply Assistant execution error: {exc}")
+        summary.add_error("apply_assistant", str(exc))
+        traceback.print_exc()
+
+    # ── Step 8c: Find outreach contacts ──────────────────────────────────────
+    print("\n📇  Running Contact-Finder step …")
+    try:
+        from core.contact_finder import ContactFinder
+        ContactFinder(config).run(summary)
+    except Exception as exc:
+        print(f"  ❌  Contact-Finder execution error: {exc}")
+        summary.add_error("contact_finder", str(exc))
+        traceback.print_exc()
+
     # ── Step 9: Log run to audit table ────────────────────────────────────────
     _finish(summary, email_sent=email_sent)
 
@@ -360,6 +384,8 @@ def _finish(summary: ScrapeSummary, email_sent: bool) -> None:
     print(f"  Strong matches  : {summary.strong_matches}")
     print(f"  Decent matches  : {summary.decent_matches}")
     print(f"  Low matches     : {summary.low_matches}")
+    print(f"  Companies (cont): {summary.companies_processed}")
+    print(f"  Contacts found  : {summary.contacts_found}")
     print(f"  Email sent      : {'Yes ✅' if email_sent else 'No'}")
     print(f"  Errors          : {len(summary.errors)}")
     for err in summary.errors:

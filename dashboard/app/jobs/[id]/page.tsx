@@ -10,8 +10,10 @@ import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Separator } from '@/components/ui/separator'
+import { ContactsPanel } from '@/components/contacts-panel'
 import { cn } from '@/lib/utils'
 import {
+  ApplicationDraft,
   Job,
   JobStatus,
   MatchLabel,
@@ -26,6 +28,8 @@ import { ExternalLink } from 'lucide-react'
 const STATUS_OPTIONS: { value: JobStatus; label: string }[] = [
   { value: 'new', label: 'New' },
   { value: 'saved', label: 'Saved' },
+  { value: 'queued_apply', label: 'Queue for Apply Draft' },
+  { value: 'failed_apply', label: 'Apply Failed' },
   { value: 'applied', label: 'Applied' },
   { value: 'interviewing', label: 'Interviewing' },
   { value: 'offer', label: 'Offer' },
@@ -126,11 +130,20 @@ export default function JobDetailPage() {
       payload.applied_at = new Date().toISOString()
     }
 
+    if (selectedStatus !== 'failed_apply') {
+      payload.auto_apply_error = null
+    }
+
     const { error } = await supabase.from('jobs').update(payload).eq('id', job.id)
 
     setSaving(false)
     if (!error) {
-      setJob((prev) => (prev ? { ...prev, status: selectedStatus, notes: notes || null } : null))
+      setJob((prev) => (prev ? { 
+        ...prev, 
+        status: selectedStatus, 
+        notes: notes || null,
+        auto_apply_error: selectedStatus !== 'failed_apply' ? null : prev.auto_apply_error
+      } : null))
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2500)
     }
@@ -233,6 +246,15 @@ export default function JobDetailPage() {
                 Easy apply
               </Badge>
             )}
+            {job.work_authorized === false && (
+              <Badge
+                variant="outline"
+                className="font-medium border-amber-500/40 bg-amber-500/10 text-amber-300"
+                title="This role is in a country where you're not marked as authorized to work. The match score has been reduced to reflect likely visa sponsorship needs."
+              >
+                May need visa sponsorship
+              </Badge>
+            )}
             {job.suggested_cv && (
               <Badge variant="outline" className="font-medium">
                 {job.suggested_cv === 'swe' ? 'SWE CV' : 'PM CV'}
@@ -316,6 +338,8 @@ export default function JobDetailPage() {
         </Card>
       )}
 
+      {job.application_draft && <ApplicationDraftCard draft={job.application_draft} />}
+
       <Card className="border-border/80 shadow-none">
         <CardHeader className="pb-2">
           <p className="text-sm font-medium">Application tracker</p>
@@ -341,6 +365,19 @@ export default function JobDetailPage() {
               ))}
             </div>
           </div>
+
+          {selectedStatus === 'queued_apply' && (
+            <p className="text-xs text-amber-400">
+              Queued. The Apply Assistant will draft a tailored cover letter for this job on the next run — review it below before applying yourself.
+            </p>
+          )}
+
+          {job.status === 'failed_apply' && job.auto_apply_error && (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-rose-300">
+              <p className="font-semibold">Auto-Apply Error Log:</p>
+              <p className="mt-1 font-mono whitespace-pre-wrap">{job.auto_apply_error}</p>
+            </div>
+          )}
 
           <div className="space-y-2">
             <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Notes</label>
@@ -372,6 +409,8 @@ export default function JobDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      <ContactsPanel jobId={job.id} />
 
       {descText && (
         <Card className="border-border/80 shadow-none">
@@ -460,6 +499,84 @@ function MetaField({ label, value }: { label: string; value: React.ReactNode }) 
       <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</dt>
       <dd className="mt-0.5 font-medium text-foreground">{value}</dd>
     </div>
+  )
+}
+
+function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="h-7 text-xs"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 2000)
+        } catch {
+          /* clipboard unavailable */
+        }
+      }}
+    >
+      {copied ? 'Copied' : label}
+    </Button>
+  )
+}
+
+function ApplicationDraftCard({ draft }: { draft: ApplicationDraft }) {
+  const generated = draft.generated_at
+    ? new Date(draft.generated_at).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' })
+    : null
+
+  return (
+    <Card className="border-border/80 shadow-none ring-1 ring-primary/20">
+      <CardHeader className="pb-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm font-medium">Apply Assistant draft</p>
+          <span className="text-xs text-muted-foreground">
+            AI-drafted — review before sending{generated ? ` · ${generated}` : ''}
+          </span>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        {draft.fit_summary && (
+          <p className="rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+            {draft.fit_summary}
+          </p>
+        )}
+
+        {draft.cover_letter && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Cover letter</span>
+              <CopyButton text={draft.cover_letter} label="Copy letter" />
+            </div>
+            <div className="whitespace-pre-line rounded-lg border border-border bg-background p-3 text-sm leading-relaxed text-foreground">
+              {draft.cover_letter}
+            </div>
+          </div>
+        )}
+
+        {draft.talking_points?.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Talking points</span>
+              <CopyButton text={draft.talking_points.map((t) => `• ${t}`).join('\n')} label="Copy points" />
+            </div>
+            <ul className="space-y-1.5">
+              {draft.talking_points.map((tp, i) => (
+                <li key={i} className="flex gap-2 text-sm text-muted-foreground">
+                  <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-primary/60" />
+                  <span>{tp}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

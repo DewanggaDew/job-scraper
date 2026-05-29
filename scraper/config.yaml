@@ -25,12 +25,34 @@ job_preferences:
       - "Selangor, Malaysia"
       - "Kuala Lumpur, Malaysia"
       - "Petaling Jaya, Malaysia"
+      - "Cyberjaya, Malaysia"
+      - "Shah Alam, Malaysia"
+      - "putrajaya, Malaysia"
+      - "Penang, Malaysia"
       - "Jakarta, Indonesia"
+      - "Tanggerang, Indonesia"
+      - "Bekasi, Indonesia"
+      - "BSD City, Indonesia"
+      - "Singapore"
+      - "Sydney, Australia"
+      - "Melbourne, Australia"
+      - "Taipei, Taiwan"
+      - "Taichung, Taiwan"
+      - "Hong Kong"
+      - "London, United Kingdom"
+      - "New York, United States"
+      - "San Francisco, United States"
     remote:
       - "Malaysia"
       - "Indonesia"
       - "Selangor, Malaysia"
       - "Jakarta, Indonesia"
+      - "Singapore"
+      - "Australia"
+      - "Taiwan"
+      - "Hong Kong"
+      - "United Kingdom"
+      - "United States"
 
 # ============================================================
 #  Title Relevance Filter
@@ -141,11 +163,19 @@ scoring:
   notify_threshold: 75     # Only email jobs at or above this score
   max_job_age_days: 30     # Jobs older than this get recency_score = 0
 
+  # Work-authorization multipliers applied to the overall score when a job is
+  # in a country the candidate isn't authorised for (see candidate_profile.
+  # work_authorization). Unknown countries (e.g. "Remote") are never penalised.
+  work_auth:
+    unauthorized_factor: 0.5          # in an unauthorised country, no sponsorship info
+    no_sponsorship_factor: 0.2        # description explicitly rules out sponsorship
+    sponsorship_available_factor: 0.95 # description offers sponsorship/relocation
+
 # ============================================================
 #  Scraping Behaviour
 # ============================================================
 scraping:
-  max_jobs_per_source: 50
+  max_jobs_per_source: 90   # Raised from 50 to spread budget across more countries (MY, ID, SG, AU, TW, HK, UK, US)
   delay_between_requests:
     min_seconds: 3
     max_seconds: 8
@@ -286,3 +316,81 @@ cv_profiles:
       - "release"
       - "go-to-market"
       - "product strategy"
+
+# ============================================================
+#  LLM (Apply Assistant) — OpenAI-compatible chat endpoint
+#  Provider-agnostic: change base_url/model/api_key_env to swap
+#  providers (OpenRouter / Groq / Mistral …) without code edits.
+# ============================================================
+llm:
+  provider: "openrouter"
+  base_url: "https://openrouter.ai/api/v1"
+  model: "meta-llama/llama-3.3-70b-instruct:free"   # free tier; swap if throttled
+  api_key_env: "OPENROUTER_API_KEY"
+  temperature: 0.4
+  max_tokens: 1200
+
+# ============================================================
+#  Apply Assistant (ToS-safe — drafts, never auto-submits)
+#  Generates a tailored cover letter + talking points per job
+#  so you can review and apply yourself.
+# ============================================================
+apply_assistant:
+  enabled: true
+  policy: "both"                # "manual" (only queued_apply) | "auto" (strong matches) | "both"
+  min_match_score: 75           # Draft for auto-policy jobs scoring >= this
+  max_drafts_per_run: 10        # Cap LLM calls per run to stay within free-tier limits
+  skip_unauthorized: true       # Don't draft for jobs likely needing visa sponsorship
+
+# ============================================================
+#  Contact Outreach — find people at target companies
+#  (recruiters, talent acquisition, hiring managers, HR) so you
+#  can reach out directly. Collects + drafts only; NEVER sends.
+# ============================================================
+contact_outreach:
+  enabled: true
+  target_min_score: 70          # Only chase companies with a match >= this score
+  target_statuses:              # …or whose job you've moved into one of these
+    - "saved"
+    - "queued_apply"
+    - "applied"
+  target_roles:                 # Which people are worth collecting
+    - "recruiter"
+    - "talent_acquisition"
+    - "hiring_manager"
+    - "hr"
+  max_companies_per_run: 10     # Hard cap on companies processed per run
+  max_contacts_per_company: 3   # Hard cap on people kept per company
+  sources:
+    company_site: true          # Scrape the employer's own site (low risk)
+    email_inference: true       # Guess emails from name + domain (MX-checked)
+    linkedin: false             # ⚠️ Phase 3: violates LinkedIn ToS / ban risk. Opt-in only.
+  email_inference:
+    verify_mx: true             # Confirm the domain accepts mail (no SMTP probing)
+  draft_messages: false         # Use the LLM to draft an outreach message per contact
+
+# ============================================================
+#  Candidate Profile (Details used in job applications)
+# ============================================================
+candidate_profile:
+  first_name: "Dewangga"
+  last_name: "Dewata Indera"
+  email: "dewangga.dewata@gmail.com"
+  phone_country_code: "60"           # Malaysia (+60)
+  phone_number: "12345678"           # Without country code
+  github_url: "https://github.com/DewanggaDew"
+  linkedin_url: "https://www.linkedin.com/in/dewangga"
+  portfolio_url: "https://dewangga.me"
+  expected_salary: "5000"            # Monthly expectation
+  notice_period_days: 30
+  # Keys must match the country keys in ranking/work_auth.py. Set true only for
+  # countries where you can legally work without employer sponsorship.
+  work_authorization:
+    malaysia: true
+    indonesia: true
+    singapore: false
+    australia: false
+    taiwan: false
+    hong_kong: false
+    united_kingdom: false
+    united_states: false
