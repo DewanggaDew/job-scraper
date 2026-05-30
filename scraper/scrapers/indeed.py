@@ -180,14 +180,14 @@ class IndeedScraper(BaseScraper):
             )
 
             for title in self.titles:
-                if len(jobs) >= self._max_jobs:
+                if len(jobs) >= self._max_jobs or self._over_budget():
                     break
 
                 for country_name, cfg in _COUNTRY_CONFIG.items():
                     if not self._should_scrape_country(country_name):
                         continue
 
-                    if len(jobs) >= self._max_jobs:
+                    if len(jobs) >= self._max_jobs or self._over_budget():
                         break
 
                     self.log(f"Searching '{title}' on Indeed {country_name} …")
@@ -222,12 +222,12 @@ class IndeedScraper(BaseScraper):
         jobs: list[Job] = []
         seen_ids: set[str] = set()
         for title in self.titles:
-            if len(jobs) >= self._max_jobs:
+            if len(jobs) >= self._max_jobs or self._over_budget():
                 break
             for country_name, cfg in _COUNTRY_CONFIG.items():
                 if not self._should_scrape_country(country_name):
                     continue
-                if len(jobs) >= self._max_jobs:
+                if len(jobs) >= self._max_jobs or self._over_budget():
                     break
                 rss_url = build_indeed_rss_url(
                     cfg["domain"], title, cfg["location_default"]

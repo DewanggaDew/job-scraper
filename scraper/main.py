@@ -187,7 +187,14 @@ def run() -> None:
     all_scraped_jobs: list[Job] = []
     scrape_t0 = time.monotonic()
 
-    SCRAPER_TIMEOUT_S = 20 * 60  # 20 minutes per scraper
+    SCRAPER_TIMEOUT_S = 20 * 60  # 20 minutes per scraper (hard kill)
+
+    # Hosted GitHub runners have only 2 vCPUs. Running one Chromium per scraper
+    # (5) plus sentence-transformers concurrently causes CPU contention that
+    # makes every scraper slower. Cap concurrency so each gets real CPU; scrapers
+    # still overlap their network waits. Each scraper also self-limits via its
+    # max_runtime_seconds budget (see config.yaml / BaseScraper).
+    MAX_PARALLEL_SCRAPERS = 3
 
     def _run_one_scraper(scraper):
         source = scraper.source_name
@@ -196,7 +203,9 @@ def run() -> None:
         print(f"  ✅  {source.capitalize()}: {len(jobs)} jobs scraped")
         return source, jobs
 
-    with ThreadPoolExecutor(max_workers=len(scrapers)) as pool:
+    with ThreadPoolExecutor(
+        max_workers=min(MAX_PARALLEL_SCRAPERS, len(scrapers))
+    ) as pool:
         futures = {pool.submit(_run_one_scraper, s): s for s in scrapers}
         for future in as_completed(futures):
             scraper = futures[future]

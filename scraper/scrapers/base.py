@@ -34,6 +34,7 @@ class BaseScraper(ABC):
         self.config = config
         self._prefs = config.get("job_preferences", {})
         self._scrape_cfg = config.get("scraping", {})
+        self._title_filter = config.get("title_filter", {})
         self._delay_min: float = float(
             self._scrape_cfg.get("delay_between_requests", {}).get("min_seconds", 3)
         )
@@ -42,6 +43,11 @@ class BaseScraper(ABC):
         )
         self._max_jobs: int = int(self._scrape_cfg.get("max_jobs_per_source", 50))
         self._headless: bool = bool(self._scrape_cfg.get("headless", True))
+        # Soft per-scraper time budget. The scraper returns whatever it has once
+        # this is exceeded, so it yields partial results instead of being killed
+        # by the hard per-scraper timeout in main.py.
+        self._budget_s: float = float(self._scrape_cfg.get("max_runtime_seconds", 900))
+        self._deadline: Optional[float] = None
 
     # ─── Abstract interface ───────────────────────────────────────────────────
 
@@ -82,6 +88,72 @@ class BaseScraper(ABC):
                 seen.add(loc)
                 result.append(loc)
         return result
+
+    @property
+    def search_locations(self) -> list[str]:
+        """
+        Country-level collapse of :pyattr:`all_locations`, used to drive the
+        search matrix.
+
+        City queries (e.g. "Kuala Lumpur, Malaysia") collapse to their country
+        ("Malaysia") because job boards already return city-level results for a
+        country query — searching every city re-fetches overlapping listings and
+        burns the per-request delay for little extra coverage. Order-preserving
+        and deduplicated, so "Selangor, Malaysia" and "Penang, Malaysia" yield a
+        single "Malaysia" search.
+        """
+        seen: set[str] = set()
+        result: list[str] = []
+        for loc in self.all_locations:
+            country = (loc.split(",")[-1].strip() or loc.strip())
+            key = country.lower()
+            if key and key not in seen:
+                seen.add(key)
+                result.append(country)
+        return result
+
+    # ─── Time budget ──────────────────────────────────────────────────────────
+
+    def _over_budget(self) -> bool:
+        """
+        Return True once this scraper has used its time budget.
+
+        The clock starts lazily on the first call, so subclasses only need to
+        add ``if self._over_budget(): break`` to their search loops — no explicit
+        start call is required. Returning partial results always beats being
+        killed by the hard per-scraper timeout in main.py (which discards them).
+        """
+        now = time.monotonic()
+        if self._deadline is None:
+            self._deadline = now + self._budget_s
+            return False
+        if now >= self._deadline:
+            self.log(
+                f"Time budget ({self._budget_s:.0f}s) reached — "
+                "returning partial results"
+            )
+            return True
+        return False
+
+    # ─── Title relevance (pre-fetch filter) ────────────────────────────────────
+
+    def _is_relevant_title(self, title: str) -> bool:
+        """
+        Cheap keyword check (same rules as the post-scrape title filter) used to
+        skip expensive per-job detail fetches for obviously irrelevant titles.
+
+        Returns True when no ``allowed_keywords`` are configured (filter
+        disabled) or the title is blank — in the blank case we defer to the full
+        parser rather than risk dropping a real job on missing metadata.
+        """
+        allowed = self._title_filter.get("allowed_keywords", [])
+        if not allowed or not (title or "").strip():
+            return True
+        from core.relevance_filter import is_relevant_title
+
+        return is_relevant_title(
+            title, allowed, self._title_filter.get("blocked_keywords", [])
+        )
 
     # ─── Delay / rate-limiting ────────────────────────────────────────────────
 

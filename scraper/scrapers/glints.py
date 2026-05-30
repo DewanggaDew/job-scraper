@@ -126,7 +126,11 @@ class GlintsScraper(BaseScraper):
             page = context.new_page()
 
             for title in self.titles:
+                if self._over_budget():
+                    break
                 for country_name, country_cfg in _COUNTRY_CONFIG.items():
+                    if self._over_budget():
+                        break
                     # Only scrape countries relevant to the configured locations
                     if not self._should_scrape_country(country_name):
                         continue
@@ -162,7 +166,11 @@ class GlintsScraper(BaseScraper):
         """Fetch explore pages with httpx; parse embedded Next.js job list."""
         jobs: list[Job] = []
         for title in self.titles:
+            if self._over_budget():
+                break
             for country_name, country_cfg in _COUNTRY_CONFIG.items():
+                if self._over_budget():
+                    break
                 if not self._should_scrape_country(country_name):
                     continue
                 url = self._build_search_url(title, country_cfg)

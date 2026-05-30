@@ -105,12 +105,12 @@ class LinkedInScraper(BaseScraper):
         seen_ids: set[str] = set()
 
         for title in self.titles:
-            if len(jobs) >= self._max_jobs:
+            if len(jobs) >= self._max_jobs or self._over_budget():
                 break
 
-            # Search both on-site and remote locations
-            for location in self.all_locations:
-                if len(jobs) >= self._max_jobs:
+            # Search both on-site and remote locations (collapsed to country level)
+            for location in self.search_locations:
+                if len(jobs) >= self._max_jobs or self._over_budget():
                     break
 
                 self.log(f"Searching: '{title}' in '{location}' …")
@@ -131,6 +131,11 @@ class LinkedInScraper(BaseScraper):
                 for result in results:
                     if len(jobs) >= self._max_jobs:
                         break
+
+                    # Skip the expensive per-job get_job() fetch (+ delay) for
+                    # titles the post-scrape filter would discard anyway.
+                    if not self._is_relevant_title(str(result.get("title") or "")):
+                        continue
 
                     job = self._parse_api_result(api, result)
                     if job and job.id not in seen_ids:
@@ -290,11 +295,11 @@ class LinkedInScraper(BaseScraper):
 
             # ── Scrape each title × location combination ──────────────────────
             for title in self.titles:
-                if len(jobs) >= self._max_jobs:
+                if len(jobs) >= self._max_jobs or self._over_budget():
                     break
 
-                for location in self.all_locations:
-                    if len(jobs) >= self._max_jobs:
+                for location in self.search_locations:
+                    if len(jobs) >= self._max_jobs or self._over_budget():
                         break
 
                     new_jobs = self._playwright_search(page, title, location, seen_ids)
@@ -379,6 +384,8 @@ class LinkedInScraper(BaseScraper):
 
         jobs: list[Job] = []
         for job_url in job_links[: self._max_jobs]:
+            if self._over_budget():
+                break
             job = self._playwright_scrape_job(page, job_url)
             if job and job.id not in seen_ids:
                 jobs.append(job)

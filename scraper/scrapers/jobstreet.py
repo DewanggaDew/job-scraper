@@ -109,7 +109,11 @@ class JobStreetScraper(BaseScraper):
             seen_ids: set[str] = set()
 
             for title in self.titles:
-                for location in self.all_locations:
+                if self._over_budget():
+                    break
+                for location in self.search_locations:
+                    if self._over_budget():
+                        break
                     domain_key = self._resolve_domain(location)
                     if not domain_key:
                         continue
@@ -154,7 +158,11 @@ class JobStreetScraper(BaseScraper):
         seen_ids: set[str] = set()
 
         for title in self.titles:
-            for location in self.all_locations:
+            if self._over_budget():
+                break
+            for location in self.search_locations:
+                if self._over_budget():
+                    break
                 domain_key = self._resolve_domain(location)
                 if not domain_key:
                     continue

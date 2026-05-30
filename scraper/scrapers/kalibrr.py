@@ -208,12 +208,12 @@ class KalibrrScraper(BaseScraper):
             )
 
             for title in self.titles:
-                if len(jobs) >= self._max_jobs:
+                if len(jobs) >= self._max_jobs or self._over_budget():
                     break
 
                 # Use Jakarta as the primary location for Kalibrr
                 for location in self._get_indonesian_locations():
-                    if len(jobs) >= self._max_jobs:
+                    if len(jobs) >= self._max_jobs or self._over_budget():
                         break
 
                     self.log(f"Searching '{title}' in '{location}' …")
@@ -244,10 +244,10 @@ class KalibrrScraper(BaseScraper):
         jobs: list[Job] = []
         seen_ids: set[str] = set()
         for title in self.titles:
-            if len(jobs) >= self._max_jobs:
+            if len(jobs) >= self._max_jobs or self._over_budget():
                 break
             for location in self._get_indonesian_locations():
-                if len(jobs) >= self._max_jobs:
+                if len(jobs) >= self._max_jobs or self._over_budget():
                     break
                 page_num = 1
                 while page_num <= max_pages and len(jobs) < self._max_jobs:
@@ -734,12 +734,15 @@ class KalibrrScraper(BaseScraper):
         )
 
     def _get_indonesian_locations(self) -> list[str]:
-        """Return only the configured locations that are in Indonesia."""
-        return [
-            loc
-            for loc in self.all_locations
-            if "indonesia" in loc.lower() or "jakarta" in loc.lower()
-        ]
+        """
+        Return the Indonesian search locations, collapsed to country level so
+        every Jakarta/Tangerang/Bekasi city query becomes a single "Indonesia"
+        search (Kalibrr returns city-level results for a country query anyway).
+        """
+        locs = [loc for loc in self.search_locations if "indonesia" in loc.lower()]
+        if locs:
+            return locs
+        return ["Indonesia"] if self._has_indonesian_locations() else []
 
 
 # ─── Work-type parser ─────────────────────────────────────────────────────────

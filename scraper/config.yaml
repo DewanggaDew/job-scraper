@@ -175,10 +175,14 @@ scoring:
 #  Scraping Behaviour
 # ============================================================
 scraping:
-  max_jobs_per_source: 90   # Raised from 50 to spread budget across more countries (MY, ID, SG, AU, TW, HK, UK, US)
+  max_jobs_per_source: 50   # Per-source cap. Lower = faster runs; the loop stops early once reached.
+  max_runtime_seconds: 900  # Soft per-scraper budget (15m). Scraper returns partial results past this, before the 20m hard timeout kills it.
   delay_between_requests:
-    min_seconds: 3
-    max_seconds: 8
+    # Most requests are API/HTTP calls, not full page loads — a short courtesy
+    # delay is plenty. With ~50 jobs/source this is the single biggest driver of
+    # wall-clock time, so keep it tight.
+    min_seconds: 1
+    max_seconds: 2
   headless: true           # Set false to debug scrapers visually
 
 # ============================================================
