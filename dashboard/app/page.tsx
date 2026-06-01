@@ -15,6 +15,7 @@ import {
   getStatusColor,
   getSourceLabel,
   formatPostedDate,
+  formatScrapedDate,
 } from '@/types'
 
 interface PageProps {
@@ -360,6 +361,10 @@ function JobCard({ job }: { job: Job }) {
           <SourceBadge source={job.source} />
           <span className="text-border">·</span>
           <span>{formatPostedDate(job.posted_at)}</span>
+          <span className="text-border">·</span>
+          <span title={`Scraped ${new Date(job.scraped_at).toLocaleString('en-MY')}`}>
+            Scraped {formatScrapedDate(job.scraped_at)}
+          </span>
         </div>
         {job.suggested_cv && (
           <Badge variant="secondary" className="h-5 text-[10px]">

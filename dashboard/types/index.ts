@@ -240,6 +240,22 @@ export function formatPostedDate(postedAt: string | null): string {
   return posted.toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+export function formatScrapedDate(scrapedAt: string | null): string {
+  if (!scrapedAt) return 'Unknown'
+  const scraped = new Date(scrapedAt)
+  const now = new Date()
+  const diffMins = Math.floor((now.getTime() - scraped.getTime()) / 60000)
+  const diffHours = Math.floor(diffMins / 60)
+  const diffDays = Math.floor(diffHours / 24)
+
+  if (diffMins < 1) return 'just now'
+  if (diffMins < 60) return `${diffMins}m ago`
+  if (diffHours < 24) return `${diffHours}h ago`
+  if (diffDays === 1) return 'yesterday'
+  if (diffDays < 7) return `${diffDays}d ago`
+  return scraped.toLocaleDateString('en-MY', { day: 'numeric', month: 'short' })
+}
+
 // ─── Contact helpers ───────────────────────────────────────────────────────────
 
 export function getContactRoleLabel(role: ContactRole): string {
