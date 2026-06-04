@@ -121,24 +121,22 @@ def upsert_jobs_batch(jobs: List[Job], batch_size: int = 50) -> int:
 
 def purge_stale_jobs(max_age_days: int = 7) -> int:
     """
-    Delete jobs that are both posted 7+ days ago AND scraped 7+ days ago.
+    Delete jobs scraped more than *max_age_days* ago to keep the feed fresh.
     Protects jobs the user has interacted with (status != 'new').
     Returns the number of deleted rows.
     """
     client = get_client()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
 
-    # A job is stale when ALL three conditions are met:
-    #   - scraped_at is older than the cutoff
-    #   - posted_at is older than the cutoff (NULL posted_at → keep the job)
+    # A job is stale when BOTH conditions are met:
+    #   - scraped_at is older than the cutoff (regardless of posted_at, which is
+    #     often NULL for sources that don't expose a post date)
     #   - the user hasn't saved / applied / etc.
     stale = _execute(
         client.table("jobs")
         .select("id")
         .eq("status", "new")
         .lt("scraped_at", cutoff)
-        .not_.is_("posted_at", "null")
-        .lt("posted_at", cutoff)
     )
     stale_rows = stale.data or []
 

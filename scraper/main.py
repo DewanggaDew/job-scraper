@@ -135,7 +135,7 @@ def run() -> None:
     )
 
     # ── Step 1b: Purge stale jobs ──────────────────────────────────────────────
-    print("\n🧹  Purging stale jobs (posted & scraped 7+ days ago) …")
+    print("\n🧹  Purging stale jobs (scraped 7+ days ago) …")
     try:
         stale_count = purge_stale_jobs(max_age_days=7)
         summary.stale_purged = stale_count
