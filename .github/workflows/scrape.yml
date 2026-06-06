@@ -36,8 +36,8 @@ jobs:
       LINKEDIN_PASSWORD:     ${{ secrets.LINKEDIN_PASSWORD }}
       LINKEDIN_COOKIES:      ${{ secrets.LINKEDIN_COOKIES }}
 
-      # ── Apply Assistant (LLM drafts cover letters via OpenRouter) ────────────
-      OPENROUTER_API_KEY:    ${{ secrets.OPENROUTER_API_KEY }}
+      # ── Apply Assistant (LLM drafts cover letters via OpenAI) ────────────────
+      OPENAI_API_KEY:        ${{ secrets.OPENAI_API_KEY }}
 
       # ── Notifications ────────────────────────────────────────────────────────
       RESEND_API_KEY:        ${{ secrets.RESEND_API_KEY }}
